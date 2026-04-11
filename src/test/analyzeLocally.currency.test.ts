@@ -38,4 +38,20 @@ describe("analyzeLocally currency output", () => {
     expect(result.currencyCode).toBe("INR");
     expect(result.summary).toContain("₹");
   });
+
+  it("marks dollar text as USD and emits dollar formatted summary", () => {
+    const text = "Loan amount: $1,50,000 at 9.99% APR for 12 months.";
+    const result = analyzeLocally(text, 150000, 9.99, 12);
+
+    expect(result.currencyCode).toBe("USD");
+    expect(result.summary).toContain("$");
+  });
+
+  it("marks euro text as EUR and emits euro formatted summary", () => {
+    const text = "Loan amount: EUR 45,000 at 7.2% APR for 36 months.";
+    const result = analyzeLocally(text, 45000, 7.2, 36);
+
+    expect(result.currencyCode).toBe("EUR");
+    expect(result.summary).toContain("€");
+  });
 });

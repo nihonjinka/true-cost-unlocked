@@ -4,7 +4,7 @@ export function Footer() {
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="font-display text-lg font-bold text-foreground">TRUE COST</span>
-          <span className="font-mono text-[10px] text-muted-foreground">© 2026</span>
+          <span className="font-mono text-[10px] text-muted-foreground">© 2026, Created by Mythos</span>
         </div>
         <p className="font-mono text-[11px] text-muted-foreground tracking-wider">
           FINANCIAL TRANSPARENCY PROTOCOL • BUILDING INFORMED DECISIONS

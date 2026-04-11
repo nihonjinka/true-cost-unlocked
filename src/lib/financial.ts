@@ -24,12 +24,30 @@ export interface AmortizationRow {
   remainingBalance: number;
 }
 
-export type SupportedCurrency = "USD" | "INR";
+export type SupportedCurrency = "USD" | "INR" | "EUR" | "GBP" | "JPY" | "CAD" | "AUD" | "SGD" | "AED";
+
+const DEFAULT_CURRENCY: SupportedCurrency = "USD";
 
 const CURRENCY_LOCALE: Record<SupportedCurrency, string> = {
   USD: "en-US",
   INR: "en-IN",
+  EUR: "en-IE",
+  GBP: "en-GB",
+  JPY: "ja-JP",
+  CAD: "en-CA",
+  AUD: "en-AU",
+  SGD: "en-SG",
+  AED: "en-AE",
 };
+
+export function isSupportedCurrency(currency: string): currency is SupportedCurrency {
+  return Object.prototype.hasOwnProperty.call(CURRENCY_LOCALE, currency);
+}
+
+function normalizeCurrency(currency: string | undefined): SupportedCurrency {
+  if (!currency) return DEFAULT_CURRENCY;
+  return isSupportedCurrency(currency) ? currency : DEFAULT_CURRENCY;
+}
 
 export function generateAmortizationSchedule(principal: number, annualRate: number, tenureMonths: number): AmortizationRow[] {
   const { emi } = calculateEMI(principal, annualRate, tenureMonths);
@@ -49,30 +67,32 @@ export function generateAmortizationSchedule(principal: number, annualRate: numb
   return rows;
 }
 
-export function formatCurrency(amount: number, currency: SupportedCurrency = "USD"): string {
-  return new Intl.NumberFormat(CURRENCY_LOCALE[currency], {
+export function formatCurrency(amount: number, currency: SupportedCurrency = DEFAULT_CURRENCY): string {
+  const safeCurrency = normalizeCurrency(currency);
+  return new Intl.NumberFormat(CURRENCY_LOCALE[safeCurrency], {
     style: "currency",
-    currency,
+    currency: safeCurrency,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount);
 }
 
-export function getCurrencySymbol(currency: SupportedCurrency = "USD"): string {
+export function getCurrencySymbol(currency: SupportedCurrency = DEFAULT_CURRENCY): string {
+  const safeCurrency = normalizeCurrency(currency);
   return (
-    new Intl.NumberFormat(CURRENCY_LOCALE[currency], {
+    new Intl.NumberFormat(CURRENCY_LOCALE[safeCurrency], {
       style: "currency",
-      currency,
+      currency: safeCurrency,
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     })
       .formatToParts(0)
-      .find((part) => part.type === "currency")?.value ?? (currency === "INR" ? "₹" : "$")
+      .find((part) => part.type === "currency")?.value ?? "$"
   );
 }
 
-export function getCurrencyLocale(currency: SupportedCurrency = "USD"): string {
-  return CURRENCY_LOCALE[currency];
+export function getCurrencyLocale(currency: SupportedCurrency = DEFAULT_CURRENCY): string {
+  return CURRENCY_LOCALE[normalizeCurrency(currency)];
 }
 
 export const DEMO_TEXT = `CREDIT CARD AGREEMENT - PLATINUM REWARDS CARD

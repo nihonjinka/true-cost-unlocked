@@ -96,7 +96,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {[
-              { label: "Loan Amount", value: amount, set: (v: number | "") => { setAmount(v); setAutoFilled(false); }, ph: "Auto-extract (USD/INR)" },
+              { label: "Loan Amount", value: amount, set: (v: number | "") => { setAmount(v); setAutoFilled(false); }, ph: "Auto-extract (currency-aware)" },
               { label: "Interest Rate (%)", value: rate, set: (v: number | "") => { setRate(v); setAutoFilled(false); }, ph: "Auto-extract" },
               { label: "Duration (months)", value: duration, set: (v: number | "") => { setDuration(v); setAutoFilled(false); }, ph: "Auto-extract" },
             ].map((field) => (

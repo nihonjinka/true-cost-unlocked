@@ -13,6 +13,23 @@ const UNIT_MULTIPLIERS: Record<string, number> = {
   billion: 1_000_000_000,
 };
 
+const CURRENCY_AMOUNT_SOURCE = String.raw`(?:\$|₹|€|£|¥|US\$|C\$|A\$|S\$|usd|inr|eur|gbp|jpy|cad|aud|sgd|aed|rs\.?)`;
+const CURRENCY_DETECTION_RULES: Array<{ code: SupportedCurrency; source: string }> = [
+  { code: "INR", source: String.raw`(?:₹|\bINR\b|\bRs\.?(?=\s|\d|$))` },
+  { code: "EUR", source: String.raw`(?:€|\bEUR\b)` },
+  { code: "GBP", source: String.raw`(?:£|\bGBP\b)` },
+  { code: "JPY", source: String.raw`(?:¥|\bJPY\b)` },
+  { code: "CAD", source: String.raw`(?:C\$|\bCAD\b)` },
+  { code: "AUD", source: String.raw`(?:A\$|\bAUD\b)` },
+  { code: "SGD", source: String.raw`(?:S\$|\bSGD\b)` },
+  { code: "AED", source: String.raw`(?:\bAED\b)` },
+  { code: "USD", source: String.raw`(?:US\$|\$|\bUSD\b)` },
+];
+const PRICE_COMPARISON_PATTERN = new RegExp(
+  String.raw`(?:was|mrp)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+.*(?:now|offer)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+`,
+  "i"
+);
+
 function parseAmountWithUnit(rawAmount: string, rawUnit?: string): number {
   const numeric = parseFloat(rawAmount.replace(/,/g, ""));
   if (!Number.isFinite(numeric)) return NaN;
@@ -21,7 +38,18 @@ function parseAmountWithUnit(rawAmount: string, rawUnit?: string): number {
 }
 
 function detectCurrencyCode(text: string): SupportedCurrency {
-  return /(?:₹|\bINR\b|\bRs\.?(?=\s|\d|$))/i.test(text) ? "INR" : "USD";
+  let detected: SupportedCurrency = "USD";
+  let maxMatches = 0;
+
+  for (const rule of CURRENCY_DETECTION_RULES) {
+    const matches = text.match(new RegExp(rule.source, "gi"))?.length ?? 0;
+    if (matches > maxMatches) {
+      maxMatches = matches;
+      detected = rule.code;
+    }
+  }
+
+  return detected;
 }
 
 export interface ExtractedValues {
@@ -38,11 +66,11 @@ export function extractValuesFromText(text: string): ExtractedValues {
 
   // Extract loan/credit amount
   const amountPatterns = [
-    /(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}(?:\$|₹|inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
+    new RegExp(String.raw`(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}${CURRENCY_AMOUNT_SOURCE}\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
     /(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)\b/i,
-    /(?:\$|₹|inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?\s*(?:loan|credit|principal|amount)?/i,
-    /(?:up\s*to|maximum|limit)[^\d]{0,25}(?:\$|₹|inr|rs\.?)?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
-    /(?:amount|balance|sum)\s*(?:of|:)\s*(?:\$|₹|inr|rs\.?)?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
+    new RegExp(String.raw`${CURRENCY_AMOUNT_SOURCE}\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?\s*(?:loan|credit|principal|amount)?`, "i"),
+    new RegExp(String.raw`(?:up\s*to|maximum|limit)[^\d]{0,25}(?:${CURRENCY_AMOUNT_SOURCE})?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
+    new RegExp(String.raw`(?:amount|balance|sum)\s*(?:of|:)\s*(?:${CURRENCY_AMOUNT_SOURCE})?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
   ];
   for (const pattern of amountPatterns) {
     const match = text.match(pattern);
@@ -105,7 +133,7 @@ export function detectDeception(text: string): DeceptionResult {
 
   if (/save\s*up\s*to\s*\d+%/i.test(text)) fakeDiscounts.push("\"Save up to X%\" — discount may be calculated against inflated baseline.");
   if (/compared\s*to/i.test(text) && /tier|rate|plan/i.test(text)) fakeDiscounts.push("Discount compared to a higher internal tier — may not reflect real market rates.");
-  if (/(?:was|mrp)\s*(?:\$|₹|inr|rs\.?)\s*[\d,]+.*(?:now|offer)\s*(?:\$|₹|inr|rs\.?)\s*[\d,]+/i.test(text)) {
+  if (PRICE_COMPARISON_PATTERN.test(text)) {
     fakeDiscounts.push("Crossed-out price pattern — verify the original price is genuine.");
   }
 
@@ -160,12 +188,12 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
   let riskScore = 20;
 
   const feePatterns: [RegExp, string][] = [
-    [/annual\s*fee[:\s]*(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Annual Fee detected"],
+    [new RegExp(String.raw`annual\s*fee[:\s]*(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Annual Fee detected"],
     [/balance\s*transfer\s*fee[:\s]*(\d+%)/i, "Balance Transfer Fee"],
     [/cash\s*advance\s*fee[:\s]*(\d+%)/i, "Cash Advance Fee"],
     [/foreign\s*transaction\s*fee[:\s]*(\d+%)/i, "Foreign Transaction Fee"],
-    [/late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Late Payment Fee"],
-    [/returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Returned Payment Fee"],
+    [new RegExp(String.raw`late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Late Payment Fee"],
+    [new RegExp(String.raw`returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Returned Payment Fee"],
     [/prepayment\s*(?:penalty|fee)/i, "Prepayment Penalty"],
     [/origination\s*fee/i, "Origination Fee"],
     [/processing\s*fee/i, "Processing Fee"],
