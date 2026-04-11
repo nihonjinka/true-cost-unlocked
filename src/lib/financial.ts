@@ -16,6 +16,32 @@ export function calculateEMI(principal: number, annualRate: number, tenureMonths
   return { emi, totalPayment, totalInterest };
 }
 
+export interface AmortizationRow {
+  month: number;
+  emi: number;
+  principalPaid: number;
+  interestPaid: number;
+  remainingBalance: number;
+}
+
+export function generateAmortizationSchedule(principal: number, annualRate: number, tenureMonths: number): AmortizationRow[] {
+  const { emi } = calculateEMI(principal, annualRate, tenureMonths);
+  if (emi === 0) return [];
+
+  const r = annualRate / 12 / 100;
+  let balance = principal;
+  const rows: AmortizationRow[] = [];
+
+  for (let month = 1; month <= tenureMonths; month++) {
+    const interestPaid = balance * r;
+    const principalPaid = Math.min(emi - interestPaid, balance);
+    balance = Math.max(balance - principalPaid, 0);
+    rows.push({ month, emi, principalPaid, interestPaid, remainingBalance: balance });
+  }
+
+  return rows;
+}
+
 export function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -44,6 +70,10 @@ LATE PAYMENT FEE: Up to $40.
 RETURNED PAYMENT FEE: Up to $40.
 
 MINIMUM PAYMENT: The greater of $25 or 1% of the outstanding balance plus interest and fees.
+
+ACT NOW - LIMITED TIME OFFER! This exclusive rate won't last forever!
+Don't miss out on this once-in-a-lifetime opportunity!
+Save up to 80% compared to other cards! (compared to our highest rate tier)
 
 Note: Making only the minimum payment will result in paying more in interest and will take longer to pay off the balance. We may change the terms at any time with 45 days notice. Promotional rates may be terminated early if any payment is missed.`;
 
