@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
 
 interface Props {
   value: number;
@@ -33,13 +32,11 @@ export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2,
   }, [value, duration]);
 
   return (
-    <motion.span
+    <span
       key={value}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="font-mono font-bold tabular-nums"
+      className="count-pop font-mono font-bold tabular-nums"
     >
       {prefix}{display.toLocaleString(locale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}{suffix}
-    </motion.span>
+    </span>
   );
 }

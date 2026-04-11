@@ -11,7 +11,7 @@ import { Footer } from "@/components/landing/Footer";
 
 export default function Index() {
   return (
-    <div className="min-h-screen bg-background grid-bg scanline relative">
+    <div className="page-enter min-h-screen bg-background grid-bg scanline relative">
       <StatusBar />
       <div className="pt-10">
         <Navbar />

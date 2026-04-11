@@ -122,7 +122,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
             whileTap={{ scale: 0.97 }}
             disabled={!canAnalyze || isLoading}
             onClick={() => onAnalyze(text, Number(amount) || 0, Number(rate) || 0, Number(duration) || 0)}
-            className="flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-mono text-[11px] tracking-widest uppercase disabled:opacity-40 disabled:cursor-not-allowed transition-all terminal-glow"
+            className="interactive-button flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-mono text-[11px] tracking-widest uppercase disabled:opacity-40 disabled:cursor-not-allowed transition-all terminal-glow"
           >
             <Play className="w-4 h-4" />
             {isLoading ? "PROCESSING..." : "ANALYZE"}
@@ -131,7 +131,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           <motion.button
             whileTap={{ scale: 0.97 }}
             onClick={loadDemo}
-            className="flex items-center gap-2 px-6 py-3 border border-primary/30 text-primary font-mono text-[11px] tracking-widest uppercase hover:bg-primary/5 transition-all"
+            className="interactive-button flex items-center gap-2 px-6 py-3 border border-primary/30 text-primary font-mono text-[11px] tracking-widest uppercase hover:bg-primary/5 transition-all"
           >
             <Sparkles className="w-4 h-4" />
             LOAD DEMO
@@ -140,7 +140,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           <motion.button
             whileTap={{ scale: 0.97 }}
             onClick={reset}
-            className="flex items-center gap-2 px-5 py-3 text-muted-foreground hover:text-foreground font-mono text-[11px] tracking-widest uppercase transition-colors"
+            className="interactive-button flex items-center gap-2 px-5 py-3 text-muted-foreground hover:text-foreground font-mono text-[11px] tracking-widest uppercase transition-colors"
           >
             <RotateCcw className="w-4 h-4" />
             RESET
