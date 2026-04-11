@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="TRUE COST social preview">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#061c3b" />
+      <stop offset="45%" stop-color="#0f3f7d" />
+      <stop offset="100%" stop-color="#1f6fa6" />
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f3de9d" />
+      <stop offset="55%" stop-color="#dcb566" />
+      <stop offset="100%" stop-color="#c9993f" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <circle cx="185" cy="315" r="165" fill="#0a2f62" stroke="#f4f7fa" stroke-width="6" />
+  <circle cx="185" cy="315" r="154" fill="none" stroke="#0a2347" stroke-width="6" />
+
+  <path d="M185 220c-28 0-53 6-74 16v58c0 56 29 99 74 123 45-24 74-67 74-123v-58c-21-10-46-16-74-16z"
+        fill="none" stroke="url(#gold)" stroke-width="8" stroke-linejoin="round" />
+  <path d="M146 348h15v40h-15zM166 332h15v56h-15zM186 302h16v86h-16zM201 309h45l-8 16h-37zM201 327h28v16h-28zM201 345h22v43h-22z"
+        fill="url(#gold)" />
+  <path d="M138 338c36-20 63-49 72-69l10 9c-11 22-35 46-61 60z" fill="url(#gold)" />
+  <path d="M206 258l21-6-6 20z" fill="url(#gold)" />
+
+  <text x="370" y="252" fill="#f4f8fb" font-family="Segoe UI, Arial, sans-serif" font-size="84" font-weight="800" letter-spacing="2">TRUE COST</text>
+  <text x="370" y="314" fill="#c4d7ea" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="600">Financial Transparency Portal</text>
+
+  <text x="370" y="400" fill="#eaf2fb" font-family="Segoe UI, Arial, sans-serif" font-size="32">Decode agreements, expose hidden fees, and understand total repayment before you sign.</text>
+
+  <g transform="translate(370 460)">
+    <rect x="0" y="0" width="220" height="60" rx="12" fill="#0a2f62" stroke="#356ca0" />
+    <text x="110" y="38" text-anchor="middle" fill="#f4f8fb" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Risk Scanner</text>
+
+    <rect x="245" y="0" width="240" height="60" rx="12" fill="#0a2f62" stroke="#356ca0" />
+    <text x="365" y="38" text-anchor="middle" fill="#f4f8fb" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">EMI Intelligence</text>
+
+    <rect x="510" y="0" width="260" height="60" rx="12" fill="#0a2f62" stroke="#356ca0" />
+    <text x="640" y="38" text-anchor="middle" fill="#f4f8fb" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Hidden Fee Alerts</text>
+  </g>
+</svg>

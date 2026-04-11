@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="FIN logo">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="64%">
+      <stop offset="0%" stop-color="#7fb8ea" />
+      <stop offset="65%" stop-color="#0d3f82" />
+      <stop offset="100%" stop-color="#07244d" />
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f3de9d" />
+      <stop offset="50%" stop-color="#dcb566" />
+      <stop offset="100%" stop-color="#c9993f" />
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.42" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <circle cx="256" cy="256" r="245" fill="url(#bg)" />
+  <circle cx="256" cy="256" r="245" fill="none" stroke="#f2f5f7" stroke-width="8" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#0a2347" stroke-width="8" />
+
+  <path d="M58 206c34-86 122-141 217-141 85 0 162 43 201 113-21 42-88 64-163 60-88-5-179-41-255-32z" fill="url(#glass)" />
+
+  <path d="M256 116c-43 0-80 9-111 24v93c0 83 43 145 111 181 68-36 111-98 111-181v-93c-31-15-68-24-111-24z"
+        fill="none" stroke="url(#gold)" stroke-width="13" stroke-linejoin="round" />
+
+  <path d="M184 307h26v58h-26z" fill="url(#gold)" />
+  <path d="M219 284h26v81h-26z" fill="url(#gold)" />
+  <path d="M255 241h26v124h-26z" fill="url(#gold)" />
+  <path d="M279 250h72l-13 27h-59z" fill="url(#gold)" />
+  <path d="M278 280h43v25h-43z" fill="url(#gold)" />
+  <path d="M278 309h33v56h-33z" fill="url(#gold)" />
+
+  <path d="M172 293c56-30 101-75 114-107l15 14c-18 33-55 71-98 93z" fill="url(#gold)" />
+  <path d="M286 166l34-10-10 33z" fill="url(#gold)" />
+
+  <text x="256" y="442" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="58" font-weight="700" fill="#eef3f8" letter-spacing="6">FIN</text>
+</svg>
