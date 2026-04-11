@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export function Navbar() {
   return (
@@ -20,12 +21,15 @@ export function Navbar() {
         </a>
       </div>
 
-      <Link
-        to="/analyze"
-        className="font-mono text-[11px] tracking-widest uppercase px-6 py-3 border border-foreground text-foreground hover:bg-foreground hover:text-background transition-all"
-      >
-        LAUNCH ANALYZER
-      </Link>
+      <div className="flex items-center gap-3">
+        <ThemeToggle />
+        <Link
+          to="/analyze"
+          className="font-mono text-[11px] tracking-widest uppercase px-6 py-3 border border-foreground text-foreground hover:bg-foreground hover:text-background transition-all"
+        >
+          LAUNCH ANALYZER
+        </Link>
+      </div>
     </nav>
   );
 }
