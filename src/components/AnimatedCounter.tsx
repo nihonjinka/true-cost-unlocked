@@ -14,7 +14,7 @@ export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2,
 
   useEffect(() => {
     const start = performance.now();
-    const from = display;
+    const from = 0;
     const to = value;
 
     function tick(now: number) {
@@ -34,9 +34,9 @@ export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2,
   return (
     <motion.span
       key={value}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="font-display font-bold tabular-nums"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="font-mono font-bold tabular-nums"
     >
       {prefix}{display.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}{suffix}
     </motion.span>
