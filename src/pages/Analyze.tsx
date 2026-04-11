@@ -13,6 +13,7 @@ import { LoanComparison } from "@/components/LoanComparison";
 import { SavingsCalculator } from "@/components/SavingsCalculator";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { analyzeLocally, extractValuesFromText, type ExtractedValues } from "@/lib/analyzeLocally";
+import { enhanceAnalysisWithAI } from "@/lib/analyzeWithAI";
 import type { DeceptionResult } from "@/components/DeceptionDetector";
 import type { AdviceResult } from "@/components/SmartAdvice";
 
@@ -59,7 +60,14 @@ export default function Analyze() {
 
       setLoanParams({ amount: finalAmount, rate: finalRate, duration: finalDuration });
       const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration);
-      setResult(analysis);
+
+      try {
+        const enhanced = await enhanceAnalysisWithAI(text, analysis);
+        setResult(enhanced);
+      } catch (aiError) {
+        console.error("AI enhancement failed, using local analysis:", aiError);
+        setResult(analysis);
+      }
     } catch (err) {
       console.error("Analysis failed:", err);
     } finally {
