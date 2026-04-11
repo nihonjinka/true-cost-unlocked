@@ -77,7 +77,7 @@ export function AnalysisInput({ onAnalyze, isLoading }: AnalysisInputProps) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-muted:foreground mb-2">Duration (months)</label>
+            <label className="block text-sm font-medium <label className="block text-sm font-medium text-muted-foreground mb-2">Duration (months)</label> mb-2">Duration (months)</label>
             <input
               type="number"
               value={duration}
