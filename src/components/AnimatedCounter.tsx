@@ -7,9 +7,10 @@ interface Props {
   suffix?: string;
   decimals?: number;
   duration?: number;
+  locale?: string;
 }
 
-export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2, duration = 1.2 }: Props) {
+export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2, duration = 1.2, locale = "en-US" }: Props) {
   const [display, setDisplay] = useState(0);
 
   useEffect(() => {
@@ -38,7 +39,7 @@ export function AnimatedCounter({ value, prefix = "", suffix = "", decimals = 2,
       animate={{ opacity: 1 }}
       className="font-mono font-bold tabular-nums"
     >
-      {prefix}{display.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}{suffix}
+      {prefix}{display.toLocaleString(locale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}{suffix}
     </motion.span>
   );
 }

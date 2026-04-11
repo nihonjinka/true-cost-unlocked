@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Shield, AlertTriangle, DollarSign, Brain, FileWarning, TrendingUp } from "lucide-react";
 import { AnimatedCounter } from "./AnimatedCounter";
 import { RiskMeter } from "./RiskMeter";
-import { formatCurrency } from "@/lib/financial";
+import { formatCurrency, getCurrencyLocale, getCurrencySymbol, type SupportedCurrency } from "@/lib/financial";
 
 export interface AnalysisResult {
   summary: string;
@@ -14,6 +14,7 @@ export interface AnalysisResult {
   totalPayment: number;
   totalInterest: number;
   principal: number;
+  currencyCode: SupportedCurrency;
 }
 
 interface Props {
@@ -48,6 +49,9 @@ function TerminalCard({ children, className = "", title, icon: Icon, tag, delay 
 }
 
 export function AnalysisDashboard({ result }: Props) {
+  const currencySymbol = getCurrencySymbol(result.currencyCode);
+  const currencyLocale = getCurrencyLocale(result.currencyCode);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -58,23 +62,23 @@ export function AnalysisDashboard({ result }: Props) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <TerminalCard title="MONTHLY EMI" icon={DollarSign} delay={0.1}>
           <div className="text-2xl font-display font-bold text-foreground">
-            <AnimatedCounter value={result.emi} prefix="$" />
+            <AnimatedCounter value={result.emi} prefix={currencySymbol} locale={currencyLocale} />
           </div>
         </TerminalCard>
         <TerminalCard title="TOTAL PAYMENT" icon={TrendingUp} delay={0.2}>
           <div className="text-2xl font-display font-bold text-foreground">
-            <AnimatedCounter value={result.totalPayment} prefix="$" />
+            <AnimatedCounter value={result.totalPayment} prefix={currencySymbol} locale={currencyLocale} />
           </div>
           <p className="font-mono text-[10px] text-muted-foreground mt-1">
-            Principal: {formatCurrency(result.principal)}
+            Principal: {formatCurrency(result.principal, result.currencyCode)}
           </p>
         </TerminalCard>
         <TerminalCard title="TOTAL INTEREST" icon={AlertTriangle} delay={0.3}>
           <div className="text-2xl font-display font-bold text-destructive">
-            <AnimatedCounter value={result.totalInterest} prefix="$" />
+            <AnimatedCounter value={result.totalInterest} prefix={currencySymbol} locale={currencyLocale} />
           </div>
           <p className="font-mono text-[10px] text-muted-foreground mt-1">
-            {((result.totalInterest / result.principal) * 100).toFixed(1)}% of principal
+            {result.principal > 0 ? ((result.totalInterest / result.principal) * 100).toFixed(1) : "0.0"}% of principal
           </p>
         </TerminalCard>
       </div>

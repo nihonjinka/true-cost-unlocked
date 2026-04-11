@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { AlertOctagon } from "lucide-react";
-import { formatCurrency } from "@/lib/financial";
+import { formatCurrency, getCurrencyLocale, getCurrencySymbol, type SupportedCurrency } from "@/lib/financial";
 import { AnimatedCounter } from "./AnimatedCounter";
 
 interface Props {
@@ -10,16 +10,18 @@ interface Props {
   totalPayment: number;
   totalInterest: number;
   durationMonths: number;
+  currencyCode?: SupportedCurrency;
 }
 
-export function WorstCaseSimulator({ principal, emi, totalPayment, totalInterest, durationMonths }: Props) {
+export function WorstCaseSimulator({ principal, emi, totalPayment, totalInterest, durationMonths, currencyCode = "USD" }: Props) {
   const [lateFeePercent, setLateFeePercent] = useState(5);
   const [missedPayments, setMissedPayments] = useState(3);
+  const currencySymbol = getCurrencySymbol(currencyCode);
+  const currencyLocale = getCurrencyLocale(currencyCode);
 
   const lateFeePerOccurrence = emi * (lateFeePercent / 100);
   const totalLateFees = lateFeePerOccurrence * missedPayments;
   const worstCaseTotal = totalPayment + totalLateFees;
-  const worstCaseInterest = totalInterest + totalLateFees;
   const increasePercent = ((worstCaseTotal - totalPayment) / totalPayment) * 100;
 
   return (
@@ -71,16 +73,16 @@ export function WorstCaseSimulator({ principal, emi, totalPayment, totalInterest
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
           <div className="bg-background border border-border p-3">
             <p className="font-mono text-[10px] text-muted-foreground uppercase">Late Fee / Occurrence</p>
-            <p className="font-display text-lg font-bold text-destructive">{formatCurrency(lateFeePerOccurrence)}</p>
+            <p className="font-display text-lg font-bold text-destructive">{formatCurrency(lateFeePerOccurrence, currencyCode)}</p>
           </div>
           <div className="bg-background border border-border p-3">
             <p className="font-mono text-[10px] text-muted-foreground uppercase">Total Late Fees</p>
-            <p className="font-display text-lg font-bold text-destructive">{formatCurrency(totalLateFees)}</p>
+            <p className="font-display text-lg font-bold text-destructive">{formatCurrency(totalLateFees, currencyCode)}</p>
           </div>
           <div className="bg-background border border-border p-3">
             <p className="font-mono text-[10px] text-muted-foreground uppercase">Worst-Case Total</p>
             <p className="font-display text-lg font-bold text-destructive">
-              <AnimatedCounter value={worstCaseTotal} prefix="$" />
+              <AnimatedCounter value={worstCaseTotal} prefix={currencySymbol} locale={currencyLocale} />
             </p>
             <p className="font-mono text-[10px] text-destructive/70">+{increasePercent.toFixed(1)}% increase</p>
           </div>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { PiggyBank, Play } from "lucide-react";
-import { calculateEMI, formatCurrency } from "@/lib/financial";
+import { calculateEMI, formatCurrency, getCurrencyLocale, getCurrencySymbol, type SupportedCurrency } from "@/lib/financial";
 import { AnimatedCounter } from "./AnimatedCounter";
 
 interface Props {
@@ -9,11 +9,14 @@ interface Props {
   annualRate: number;
   tenureMonths: number;
   totalInterest: number;
+  currencyCode?: SupportedCurrency;
 }
 
-export function SavingsCalculator({ principal, annualRate, tenureMonths, totalInterest }: Props) {
+export function SavingsCalculator({ principal, annualRate, tenureMonths, totalInterest, currencyCode = "USD" }: Props) {
   const [extraMonthly, setExtraMonthly] = useState(100);
   const [calculated, setCalculated] = useState(false);
+  const currencySymbol = getCurrencySymbol(currencyCode);
+  const currencyLocale = getCurrencyLocale(currencyCode);
 
   // Calculate how early you can pay off with extra payments
   const r = annualRate / 12 / 100;
@@ -53,7 +56,7 @@ export function SavingsCalculator({ principal, annualRate, tenureMonths, totalIn
       <div className="p-4 space-y-4">
         <div>
           <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
-            Extra Monthly Payment ($)
+            Extra Monthly Payment
           </label>
           <div className="flex items-center gap-4">
             <input
@@ -65,7 +68,7 @@ export function SavingsCalculator({ principal, annualRate, tenureMonths, totalIn
               onChange={(e) => { setExtraMonthly(Number(e.target.value)); setCalculated(false); }}
               className="flex-1 accent-primary"
             />
-            <span className="font-mono text-sm text-foreground w-20 text-right">{formatCurrency(extraMonthly)}</span>
+            <span className="font-mono text-sm text-foreground w-20 text-right">{formatCurrency(extraMonthly, currencyCode)}</span>
           </div>
         </div>
 
@@ -82,7 +85,7 @@ export function SavingsCalculator({ principal, annualRate, tenureMonths, totalIn
             <div className="bg-background border border-primary/30 p-3">
               <p className="font-mono text-[10px] text-muted-foreground uppercase">Interest Saved</p>
               <p className="font-display text-lg font-bold text-primary">
-                <AnimatedCounter value={Math.max(interestSaved, 0)} prefix="$" />
+                <AnimatedCounter value={Math.max(interestSaved, 0)} prefix={currencySymbol} locale={currencyLocale} />
               </p>
             </div>
             <div className="bg-background border border-primary/30 p-3">

@@ -1,7 +1,28 @@
-import { calculateEMI } from "./financial";
+import { calculateEMI, formatCurrency, type SupportedCurrency } from "./financial";
 import type { AnalysisResult } from "@/components/AnalysisDashboard";
 import type { DeceptionResult } from "@/components/DeceptionDetector";
 import type { AdviceResult } from "@/components/SmartAdvice";
+
+const UNIT_MULTIPLIERS: Record<string, number> = {
+  k: 1_000,
+  thousand: 1_000,
+  lakh: 100_000,
+  lac: 100_000,
+  crore: 10_000_000,
+  million: 1_000_000,
+  billion: 1_000_000_000,
+};
+
+function parseAmountWithUnit(rawAmount: string, rawUnit?: string): number {
+  const numeric = parseFloat(rawAmount.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) return NaN;
+  const unit = rawUnit?.toLowerCase().trim() ?? "";
+  return numeric * (UNIT_MULTIPLIERS[unit] ?? 1);
+}
+
+function detectCurrencyCode(text: string): SupportedCurrency {
+  return /(?:₹|\bINR\b|\bRs\.?(?=\s|\d|$))/i.test(text) ? "INR" : "USD";
+}
 
 export interface ExtractedValues {
   loanAmount: number | null;
@@ -17,16 +38,17 @@ export function extractValuesFromText(text: string): ExtractedValues {
 
   // Extract loan/credit amount
   const amountPatterns = [
-    /(?:loan|credit|principal|borrow|finance|amount)[^$\d]*\$\s*([\d,]+(?:\.\d+)?)/i,
-    /\$\s*([\d,]+(?:\.\d+)?)\s*(?:loan|credit|principal)/i,
-    /(?:up\s*to|maximum|limit)[^$\d]*\$\s*([\d,]+(?:\.\d+)?)/i,
-    /(?:amount|balance|sum)\s*(?:of|:)\s*\$?\s*([\d,]+(?:\.\d+)?)/i,
+    /(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}(?:\$|₹|inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
+    /(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)\b/i,
+    /(?:\$|₹|inr|rs\.?)\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?\s*(?:loan|credit|principal|amount)?/i,
+    /(?:up\s*to|maximum|limit)[^\d]{0,25}(?:\$|₹|inr|rs\.?)?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
+    /(?:amount|balance|sum)\s*(?:of|:)\s*(?:\$|₹|inr|rs\.?)?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?/i,
   ];
   for (const pattern of amountPatterns) {
     const match = text.match(pattern);
     if (match) {
-      const val = parseFloat(match[1].replace(/,/g, ""));
-      if (val > 100) { loanAmount = val; break; }
+      const val = parseAmountWithUnit(match[1], match[2]);
+      if (Number.isFinite(val) && val > 100) { loanAmount = val; break; }
     }
   }
 
@@ -83,7 +105,9 @@ export function detectDeception(text: string): DeceptionResult {
 
   if (/save\s*up\s*to\s*\d+%/i.test(text)) fakeDiscounts.push("\"Save up to X%\" — discount may be calculated against inflated baseline.");
   if (/compared\s*to/i.test(text) && /tier|rate|plan/i.test(text)) fakeDiscounts.push("Discount compared to a higher internal tier — may not reflect real market rates.");
-  if (/was\s*\$[\d,]+.*now\s*\$[\d,]+/i.test(text)) fakeDiscounts.push("Crossed-out price pattern — verify the original price is genuine.");
+  if (/(?:was|mrp)\s*(?:\$|₹|inr|rs\.?)\s*[\d,]+.*(?:now|offer)\s*(?:\$|₹|inr|rs\.?)\s*[\d,]+/i.test(text)) {
+    fakeDiscounts.push("Crossed-out price pattern — verify the original price is genuine.");
+  }
 
   if (/once[\s-]*in[\s-]*a[\s-]*lifetime/i.test(text)) emotionalManipulation.push("\"Once in a lifetime\" — emotional exaggeration to override rational analysis.");
   if (/don'?t\s*miss\s*out/i.test(text)) emotionalManipulation.push("\"Don't miss out\" — FOMO (fear of missing out) tactic.");
@@ -129,18 +153,19 @@ export function generateAdvice(riskScore: number, rate: number, totalInterest: n
 export function analyzeLocally(text: string, amount: number, rate: number, duration: number): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
   const { emi, totalPayment, totalInterest } = calculateEMI(amount, rate, duration);
   const lower = text.toLowerCase();
+  const currencyCode = detectCurrencyCode(text);
 
   const hiddenFees: string[] = [];
   const warnings: string[] = [];
   let riskScore = 20;
 
   const feePatterns: [RegExp, string][] = [
-    [/annual\s*fee[:\s]*\$?([\d,.]+)/i, "Annual Fee detected"],
+    [/annual\s*fee[:\s]*(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Annual Fee detected"],
     [/balance\s*transfer\s*fee[:\s]*(\d+%)/i, "Balance Transfer Fee"],
     [/cash\s*advance\s*fee[:\s]*(\d+%)/i, "Cash Advance Fee"],
     [/foreign\s*transaction\s*fee[:\s]*(\d+%)/i, "Foreign Transaction Fee"],
-    [/late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?\$?([\d,.]+)/i, "Late Payment Fee"],
-    [/returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?\$?([\d,.]+)/i, "Returned Payment Fee"],
+    [/late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Late Payment Fee"],
+    [/returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:\$|₹|inr|rs\.?)?([\d,.]+)/i, "Returned Payment Fee"],
     [/prepayment\s*(?:penalty|fee)/i, "Prepayment Penalty"],
     [/origination\s*fee/i, "Origination Fee"],
     [/processing\s*fee/i, "Processing Fee"],
@@ -189,8 +214,8 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
 
   let summary: string;
   if (amount > 0 && rate > 0 && duration > 0) {
-    summary = `This agreement involves a loan/credit of $${amount.toLocaleString()} at ${rate}% annual interest over ${duration} months. ` +
-      `Your monthly payment would be $${emi.toFixed(2)}, totaling $${totalPayment.toFixed(2)} — meaning you'd pay $${totalInterest.toFixed(2)} (${interestPct}%) in interest alone. ` +
+    summary = `This agreement involves a loan/credit of ${formatCurrency(amount, currencyCode)} at ${rate}% annual interest over ${duration} months. ` +
+      `Your monthly payment would be ${formatCurrency(emi, currencyCode)}, totaling ${formatCurrency(totalPayment, currencyCode)} — meaning you'd pay ${formatCurrency(totalInterest, currencyCode)} (${interestPct}%) in interest alone. ` +
       `${hiddenFees.length > 0 ? `We detected ${hiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
       `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."}`;
   } else {
@@ -207,7 +232,7 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
         ? "Your total interest exceeds 30% of the principal — this is an expensive loan. Shop around for better rates."
         : "Your interest-to-principal ratio is within reasonable bounds for this rate."
     );
-    insights.push(`Monthly EMI of $${emi.toFixed(2)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`);
+    insights.push(`Monthly EMI of ${formatCurrency(emi, currencyCode)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`);
   }
   insights.push(
     hiddenFees.length >= 3
@@ -228,6 +253,7 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
     totalPayment,
     totalInterest,
     principal: amount,
+    currencyCode,
     deception,
     advice,
   };

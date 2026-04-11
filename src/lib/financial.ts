@@ -24,6 +24,13 @@ export interface AmortizationRow {
   remainingBalance: number;
 }
 
+export type SupportedCurrency = "USD" | "INR";
+
+const CURRENCY_LOCALE: Record<SupportedCurrency, string> = {
+  USD: "en-US",
+  INR: "en-IN",
+};
+
 export function generateAmortizationSchedule(principal: number, annualRate: number, tenureMonths: number): AmortizationRow[] {
   const { emi } = calculateEMI(principal, annualRate, tenureMonths);
   if (emi === 0) return [];
@@ -42,13 +49,30 @@ export function generateAmortizationSchedule(principal: number, annualRate: numb
   return rows;
 }
 
-export function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("en-US", {
+export function formatCurrency(amount: number, currency: SupportedCurrency = "USD"): string {
+  return new Intl.NumberFormat(CURRENCY_LOCALE[currency], {
     style: "currency",
-    currency: "USD",
+    currency,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount);
+}
+
+export function getCurrencySymbol(currency: SupportedCurrency = "USD"): string {
+  return (
+    new Intl.NumberFormat(CURRENCY_LOCALE[currency], {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    })
+      .formatToParts(0)
+      .find((part) => part.type === "currency")?.value ?? (currency === "INR" ? "₹" : "$")
+  );
+}
+
+export function getCurrencyLocale(currency: SupportedCurrency = "USD"): string {
+  return CURRENCY_LOCALE[currency];
 }
 
 export const DEMO_TEXT = `CREDIT CARD AGREEMENT - PLATINUM REWARDS CARD

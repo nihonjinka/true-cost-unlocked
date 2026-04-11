@@ -134,17 +134,20 @@ export default function Analyze() {
                     totalPayment={result.totalPayment}
                     totalInterest={result.totalInterest}
                     durationMonths={loanParams.duration}
+                    currencyCode={result.currencyCode}
                   />
                   <AmortizationTable
                     principal={result.principal}
                     annualRate={loanParams.rate}
                     tenureMonths={loanParams.duration}
+                    currencyCode={result.currencyCode}
                   />
                   <SavingsCalculator
                     principal={result.principal}
                     annualRate={loanParams.rate}
                     tenureMonths={loanParams.duration}
                     totalInterest={result.totalInterest}
+                    currencyCode={result.currencyCode}
                   />
                 </>
               )}

@@ -1,15 +1,16 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Table, ChevronDown, ChevronUp } from "lucide-react";
-import { formatCurrency, generateAmortizationSchedule } from "@/lib/financial";
+import { formatCurrency, generateAmortizationSchedule, type SupportedCurrency } from "@/lib/financial";
 
 interface Props {
   principal: number;
   annualRate: number;
   tenureMonths: number;
+  currencyCode?: SupportedCurrency;
 }
 
-export function AmortizationTable({ principal, annualRate, tenureMonths }: Props) {
+export function AmortizationTable({ principal, annualRate, tenureMonths, currencyCode = "USD" }: Props) {
   const [expanded, setExpanded] = useState(false);
   const schedule = generateAmortizationSchedule(principal, annualRate, tenureMonths);
   const displayRows = expanded ? schedule : schedule.slice(0, 6);
@@ -43,10 +44,10 @@ export function AmortizationTable({ principal, annualRate, tenureMonths }: Props
             {displayRows.map((row) => (
               <tr key={row.month} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                 <td className="px-4 py-2 text-foreground">{row.month}</td>
-                <td className="px-4 py-2 text-right text-foreground">{formatCurrency(row.emi)}</td>
-                <td className="px-4 py-2 text-right text-primary">{formatCurrency(row.principalPaid)}</td>
-                <td className="px-4 py-2 text-right text-destructive">{formatCurrency(row.interestPaid)}</td>
-                <td className="px-4 py-2 text-right text-muted-foreground">{formatCurrency(row.remainingBalance)}</td>
+                <td className="px-4 py-2 text-right text-foreground">{formatCurrency(row.emi, currencyCode)}</td>
+                <td className="px-4 py-2 text-right text-primary">{formatCurrency(row.principalPaid, currencyCode)}</td>
+                <td className="px-4 py-2 text-right text-destructive">{formatCurrency(row.interestPaid, currencyCode)}</td>
+                <td className="px-4 py-2 text-right text-muted-foreground">{formatCurrency(row.remainingBalance, currencyCode)}</td>
               </tr>
             ))}
           </tbody>
