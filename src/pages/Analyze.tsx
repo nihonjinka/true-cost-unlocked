@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Shield, ArrowLeft } from "lucide-react";
+import { Shield, ArrowLeft, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AnalysisInput } from "@/components/AnalysisInput";
 import { AnalysisDashboard, AnalysisResult } from "@/components/AnalysisDashboard";
@@ -12,7 +12,7 @@ import { SmartAdvice } from "@/components/SmartAdvice";
 import { LoanComparison } from "@/components/LoanComparison";
 import { SavingsCalculator } from "@/components/SavingsCalculator";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { analyzeLocally } from "@/lib/analyzeLocally";
+import { analyzeLocally, extractValuesFromText, type ExtractedValues } from "@/lib/analyzeLocally";
 import type { DeceptionResult } from "@/components/DeceptionDetector";
 import type { AdviceResult } from "@/components/SmartAdvice";
 
@@ -25,14 +25,40 @@ export default function Analyze() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<ExtendedResult | null>(null);
   const [loanParams, setLoanParams] = useState({ amount: 0, rate: 0, duration: 0 });
+  const [extractedValues, setExtractedValues] = useState<ExtractedValues | null>(null);
+  const [extractionWarning, setExtractionWarning] = useState<string | null>(null);
 
   const handleAnalyze = async (text: string, amount: number, rate: number, duration: number) => {
     setIsLoading(true);
     setResult(null);
-    setLoanParams({ amount, rate, duration });
+    setExtractionWarning(null);
+
     await new Promise((r) => setTimeout(r, 1500));
+
     try {
-      const analysis = analyzeLocally(text, amount, rate, duration);
+      // Step 1: Extract values from text if not manually provided
+      const extracted = extractValuesFromText(text);
+      const finalAmount = amount || extracted.loanAmount || 0;
+      const finalRate = rate || extracted.interestRate || 0;
+      const finalDuration = duration || extracted.tenureMonths || 0;
+
+      // Update extracted values for auto-fill display
+      setExtractedValues(extracted);
+
+      // Show warning if we couldn't extract key financial values and user didn't provide them
+      const missingFields: string[] = [];
+      if (finalAmount === 0) missingFields.push("loan amount");
+      if (finalRate === 0) missingFields.push("interest rate");
+      if (finalDuration === 0) missingFields.push("duration");
+
+      if (missingFields.length > 0) {
+        setExtractionWarning(
+          `Unable to extract: ${missingFields.join(", ")}. EMI calculations may be incomplete. You can enter values manually above.`
+        );
+      }
+
+      setLoanParams({ amount: finalAmount, rate: finalRate, duration: finalDuration });
+      const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration);
       setResult(analysis);
     } catch (err) {
       console.error("Analysis failed:", err);
@@ -40,6 +66,8 @@ export default function Analyze() {
       setIsLoading(false);
     }
   };
+
+  const hasFinancials = loanParams.amount > 0 && loanParams.rate > 0 && loanParams.duration > 0;
 
   return (
     <div className="min-h-screen bg-background grid-bg scanline">
@@ -73,33 +101,53 @@ export default function Analyze() {
           </div>
         </motion.header>
 
-        <AnalysisInput onAnalyze={handleAnalyze} isLoading={isLoading} />
+        <AnalysisInput
+          onAnalyze={handleAnalyze}
+          isLoading={isLoading}
+          extractedValues={extractedValues}
+        />
 
         <div className="mt-8 space-y-4">
           {isLoading && <LoadingSpinner />}
+
+          {extractionWarning && !isLoading && result && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-start gap-3 px-4 py-3 border border-yellow-500/30 bg-yellow-500/5"
+            >
+              <AlertCircle className="w-4 h-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+              <p className="font-mono text-xs text-yellow-500">{extractionWarning}</p>
+            </motion.div>
+          )}
+
           {result && !isLoading && (
             <>
               <AnalysisDashboard result={result} />
               <DeceptionDetector deception={result.deception} />
               <SmartAdvice advice={result.advice} />
-              <WorstCaseSimulator
-                principal={result.principal}
-                emi={result.emi}
-                totalPayment={result.totalPayment}
-                totalInterest={result.totalInterest}
-                durationMonths={loanParams.duration}
-              />
-              <AmortizationTable
-                principal={result.principal}
-                annualRate={loanParams.rate}
-                tenureMonths={loanParams.duration}
-              />
-              <SavingsCalculator
-                principal={result.principal}
-                annualRate={loanParams.rate}
-                tenureMonths={loanParams.duration}
-                totalInterest={result.totalInterest}
-              />
+              {hasFinancials && (
+                <>
+                  <WorstCaseSimulator
+                    principal={result.principal}
+                    emi={result.emi}
+                    totalPayment={result.totalPayment}
+                    totalInterest={result.totalInterest}
+                    durationMonths={loanParams.duration}
+                  />
+                  <AmortizationTable
+                    principal={result.principal}
+                    annualRate={loanParams.rate}
+                    tenureMonths={loanParams.duration}
+                  />
+                  <SavingsCalculator
+                    principal={result.principal}
+                    annualRate={loanParams.rate}
+                    tenureMonths={loanParams.duration}
+                    totalInterest={result.totalInterest}
+                  />
+                </>
+              )}
               <LoanComparison />
             </>
           )}
