@@ -19,6 +19,11 @@ type FullAnalysis = AnalysisResult & {
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
+export function isAIEnhancementConfigured(): boolean {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  return Boolean(apiKey);
+}
+
 function sanitizeList(items: unknown, limit = 6): string[] {
   if (!Array.isArray(items)) return [];
   return items
@@ -143,12 +148,16 @@ export async function enhanceAnalysisWithAI(text: string, local: FullAnalysis): 
   const parsed = parseEnhancement(extractResponseText(payload));
   if (!parsed) return local;
 
+  // Keep compliance-critical fee/warning flags deterministic to avoid AI hallucinations.
+  const deterministicHiddenFees = local.hiddenFees;
+  const deterministicWarnings = local.warnings;
+
   return {
     ...local,
     summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : local.summary,
     insights: mergeUnique(local.insights, sanitizeList(parsed.insights, 6), 8),
-    hiddenFees: mergeUnique(local.hiddenFees, sanitizeList(parsed.hiddenFees, 6), 8),
-    warnings: mergeUnique(local.warnings, sanitizeList(parsed.warnings, 6), 8),
+    hiddenFees: deterministicHiddenFees,
+    warnings: deterministicWarnings,
     deception: (() => {
       const aiDeception = sanitizeDeception(parsed.deception, local.deception);
       return {

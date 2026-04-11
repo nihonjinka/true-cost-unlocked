@@ -30,6 +30,41 @@ const PRICE_COMPARISON_PATTERN = new RegExp(
   "i"
 );
 
+function compactSnippet(value: string, maxLength = 120): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 3)}...`;
+}
+
+function cloneRegex(pattern: RegExp, forceGlobal = false): RegExp {
+  const flagSet = new Set(pattern.flags.split(""));
+  if (forceGlobal) flagSet.add("g");
+  return new RegExp(pattern.source, Array.from(flagSet).join(""));
+}
+
+function findFirstEvidence(text: string, pattern: RegExp): string | null {
+  const match = cloneRegex(pattern).exec(text);
+  return match ? compactSnippet(match[0]) : null;
+}
+
+function findAllEvidence(text: string, pattern: RegExp, limit = 3): string[] {
+  const regex = cloneRegex(pattern, true);
+  const evidences: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null && evidences.length < limit) {
+    const evidence = compactSnippet(match[0]);
+    if (!evidences.includes(evidence)) {
+      evidences.push(evidence);
+    }
+    if (match.index === regex.lastIndex) {
+      regex.lastIndex += 1;
+    }
+  }
+
+  return evidences;
+}
+
 function parseAmountWithUnit(rawAmount: string, rawUnit?: string): number {
   const numeric = parseFloat(rawAmount.replace(/,/g, ""));
   if (!Number.isFinite(numeric)) return NaN;
@@ -125,22 +160,54 @@ export function detectDeception(text: string): DeceptionResult {
   const fakeDiscounts: string[] = [];
   const emotionalManipulation: string[] = [];
 
-  if (/act\s*now/i.test(text)) urgencyTactics.push("\"Act Now\" pressure language detected — creates false urgency.");
-  if (/limited\s*time/i.test(text)) urgencyTactics.push("\"Limited Time\" framing — may pressure hasty decisions.");
-  if (/won'?t\s*last/i.test(text)) urgencyTactics.push("\"Won't last\" scarcity tactic detected.");
-  if (/hurry/i.test(text)) urgencyTactics.push("\"Hurry\" urgency language found.");
-  if (/expire/i.test(text) && /soon/i.test(text)) urgencyTactics.push("Expiry pressure — implies you must act immediately.");
+  const urgencyRules: Array<{ pattern: RegExp; message: string }> = [
+    { pattern: /\bact\s*now\b/i, message: '"Act now" pressure language detected.' },
+    { pattern: /\blimited\s*time\b/i, message: '"Limited time" framing may pressure hasty decisions.' },
+    { pattern: /\bwon'?t\s*last\b/i, message: '"Won\'t last" scarcity tactic detected.' },
+    { pattern: /\bhurry\b/i, message: '"Hurry" urgency language found.' },
+    { pattern: /\bexpire(?:s|d)?\b[\s\S]{0,20}\bsoon\b/i, message: "Expiry pressure implies you must act immediately." },
+  ];
 
-  if (/save\s*up\s*to\s*\d+%/i.test(text)) fakeDiscounts.push("\"Save up to X%\" — discount may be calculated against inflated baseline.");
-  if (/compared\s*to/i.test(text) && /tier|rate|plan/i.test(text)) fakeDiscounts.push("Discount compared to a higher internal tier — may not reflect real market rates.");
-  if (PRICE_COMPARISON_PATTERN.test(text)) {
-    fakeDiscounts.push("Crossed-out price pattern — verify the original price is genuine.");
+  const fakeDiscountRules: Array<{ pattern: RegExp; message: string }> = [
+    { pattern: /\bsave\s*up\s*to\s*\d+%/i, message: '"Save up to" claim may be calculated against an inflated baseline.' },
+    {
+      pattern: /\bcompared\s*to\b[\s\S]{0,40}\b(?:tier|rate|plan)\b/i,
+      message: "Discount compared to an internal tier may not reflect market reality.",
+    },
+  ];
+
+  const emotionalRules: Array<{ pattern: RegExp; message: string }> = [
+    {
+      pattern: /\bonce[\s-]*in[\s-]*a[\s-]*lifetime\b/i,
+      message: '"Once in a lifetime" exaggeration detected.',
+    },
+    { pattern: /\bdon'?t\s*miss\s*out\b/i, message: '"Don\'t miss out" FOMO tactic detected.' },
+    {
+      pattern: /\bexclusive\b[\s\S]{0,24}\b(?:offer|rate|deal|access)\b/i,
+      message: '"Exclusive" framing detected in promotional context.',
+    },
+    { pattern: /\byou\s*deserve\b/i, message: '"You deserve" emotional appeal detected.' },
+  ];
+
+  for (const rule of urgencyRules) {
+    const evidence = findFirstEvidence(text, rule.pattern);
+    if (evidence) urgencyTactics.push(`${rule.message} Evidence: ${evidence}.`);
   }
 
-  if (/once[\s-]*in[\s-]*a[\s-]*lifetime/i.test(text)) emotionalManipulation.push("\"Once in a lifetime\" — emotional exaggeration to override rational analysis.");
-  if (/don'?t\s*miss\s*out/i.test(text)) emotionalManipulation.push("\"Don't miss out\" — FOMO (fear of missing out) tactic.");
-  if (/exclusive/i.test(text) && (/offer|rate|deal/i.test(text))) emotionalManipulation.push("\"Exclusive\" framing — makes offer seem special when it may be standard.");
-  if (/you\s*deserve/i.test(text)) emotionalManipulation.push("\"You deserve\" — emotional appeal bypassing financial analysis.");
+  for (const rule of fakeDiscountRules) {
+    const evidence = findFirstEvidence(text, rule.pattern);
+    if (evidence) fakeDiscounts.push(`${rule.message} Evidence: ${evidence}.`);
+  }
+
+  const crossedOutEvidence = findFirstEvidence(text, PRICE_COMPARISON_PATTERN);
+  if (crossedOutEvidence) {
+    fakeDiscounts.push(`Crossed-out price pattern found. Evidence: ${crossedOutEvidence}.`);
+  }
+
+  for (const rule of emotionalRules) {
+    const evidence = findFirstEvidence(text, rule.pattern);
+    if (evidence) emotionalManipulation.push(`${rule.message} Evidence: ${evidence}.`);
+  }
 
   return { urgencyTactics, fakeDiscounts, emotionalManipulation };
 }
@@ -180,61 +247,87 @@ export function generateAdvice(riskScore: number, rate: number, totalInterest: n
 
 export function analyzeLocally(text: string, amount: number, rate: number, duration: number): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
   const { emi, totalPayment, totalInterest } = calculateEMI(amount, rate, duration);
-  const lower = text.toLowerCase();
   const currencyCode = detectCurrencyCode(text);
 
   const hiddenFees: string[] = [];
   const warnings: string[] = [];
   let riskScore = 20;
 
-  const feePatterns: [RegExp, string][] = [
-    [new RegExp(String.raw`annual\s*fee[:\s]*(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Annual Fee detected"],
-    [/balance\s*transfer\s*fee[:\s]*(\d+%)/i, "Balance Transfer Fee"],
-    [/cash\s*advance\s*fee[:\s]*(\d+%)/i, "Cash Advance Fee"],
-    [/foreign\s*transaction\s*fee[:\s]*(\d+%)/i, "Foreign Transaction Fee"],
-    [new RegExp(String.raw`late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Late Payment Fee"],
-    [new RegExp(String.raw`returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?([\d,.]+)`, "i"), "Returned Payment Fee"],
-    [/prepayment\s*(?:penalty|fee)/i, "Prepayment Penalty"],
-    [/origination\s*fee/i, "Origination Fee"],
-    [/processing\s*fee/i, "Processing Fee"],
+  const feePatterns: Array<{ pattern: RegExp; label: string }> = [
+    { pattern: new RegExp(String.raw`annual\s*fee[:\s]*(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"), label: "Annual Fee" },
+    { pattern: /balance\s*transfer\s*fee[:\s]*(?:\d+%)/i, label: "Balance Transfer Fee" },
+    { pattern: /cash\s*advance\s*fee[:\s]*(?:\d+%)/i, label: "Cash Advance Fee" },
+    { pattern: /foreign\s*transaction\s*fee[:\s]*(?:\d+%)/i, label: "Foreign Transaction Fee" },
+    {
+      pattern: new RegExp(String.raw`late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"),
+      label: "Late Payment Fee",
+    },
+    {
+      pattern: new RegExp(String.raw`returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"),
+      label: "Returned Payment Fee",
+    },
+    { pattern: /prepayment\s*(?:penalty|fee)/i, label: "Prepayment Penalty" },
+    { pattern: /origination\s*fee/i, label: "Origination Fee" },
+    { pattern: /processing\s*fee/i, label: "Processing Fee" },
   ];
 
-  for (const [pattern, label] of feePatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      hiddenFees.push(`${label}: ${match[0].trim()}`);
-      riskScore += 8;
+  for (const { pattern, label } of feePatterns) {
+    const evidenceMatches = findAllEvidence(text, pattern, 3);
+    if (evidenceMatches.length > 0) {
+      for (const evidence of evidenceMatches) {
+        hiddenFees.push(`${label}: ${evidence}`);
+      }
+      riskScore += 6 + Math.min(2, evidenceMatches.length - 1) * 2;
     }
   }
 
-  if (lower.includes("penalty apr")) {
-    warnings.push("Penalty APR clause found — your rate could increase significantly after a missed payment.");
-    riskScore += 15;
+  const warningRules: Array<{ pattern: RegExp; message: string; risk: number }> = [
+    {
+      pattern: /\bpenalty\s*apr\b/i,
+      message: "Penalty APR clause found — your rate could increase significantly after a missed payment.",
+      risk: 15,
+    },
+    {
+      pattern: /\bvariable\b[\s\S]{0,80}\bprime\s*rate\b/i,
+      message: "Variable rate tied to Prime Rate — your payments could increase when rates rise.",
+      risk: 10,
+    },
+    {
+      pattern: /\b(?:change|modify)\s+(?:the\s+)?terms?\b/i,
+      message: "Lender reserves the right to change terms — review trigger conditions carefully.",
+      risk: 12,
+    },
+    {
+      pattern: /\bminimum\s*payment\b[\s\S]{0,90}\b(?:greater\s*of|interest|fees|%)\b/i,
+      message: "Minimum-payment clause detected — paying only minimums can significantly raise total interest.",
+      risk: 5,
+    },
+    {
+      pattern: /\b(?:introductory|promotional)\s*(?:apr|rate)?\b/i,
+      message: "Promotional rate language present — verify post-promo pricing and trigger conditions.",
+      risk: 5,
+    },
+    {
+      pattern: /\bindefinitely\b[\s\S]{0,80}\b(?:apply|penalty|apr|rate)\b|\b(?:penalty|apr|rate)\b[\s\S]{0,80}\bindefinitely\b/i,
+      message: "Penalty terms may apply indefinitely — this is an aggressive risk clause.",
+      risk: 10,
+    },
+  ];
+
+  for (const rule of warningRules) {
+    const evidence = findFirstEvidence(text, rule.pattern);
+    if (!evidence) continue;
+    warnings.push(`${rule.message} Evidence: ${evidence}.`);
+    riskScore += rule.risk;
   }
-  if (lower.includes("variable") && lower.includes("prime rate")) {
-    warnings.push("Variable rate tied to Prime Rate — your payments could increase when interest rates rise.");
-    riskScore += 10;
-  }
-  if (lower.includes("change the terms") || lower.includes("modify terms")) {
-    warnings.push("Lender reserves the right to change terms — read carefully for conditions.");
-    riskScore += 12;
-  }
-  if (lower.includes("minimum payment")) {
-    warnings.push("Minimum payment clause — paying only minimums will cost you significantly more in interest.");
-    riskScore += 5;
-  }
-  if (lower.includes("introductory") || lower.includes("promotional")) {
-    warnings.push("Promotional/introductory rate present — be aware of the rate after the promo period ends.");
-    riskScore += 5;
-  }
-  if (lower.includes("indefinitely")) {
-    warnings.push("Penalty terms may apply indefinitely — this is an aggressive clause.");
-    riskScore += 10;
-  }
+
   if (rate > 20) {
     warnings.push(`High interest rate of ${rate}% — significantly above average market rates.`);
     riskScore += 10;
   }
+
+  const uniqueHiddenFees = Array.from(new Set(hiddenFees));
+  const uniqueWarnings = Array.from(new Set(warnings));
 
   riskScore = Math.min(riskScore, 100);
 
@@ -244,10 +337,10 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
   if (amount > 0 && rate > 0 && duration > 0) {
     summary = `This agreement involves a loan/credit of ${formatCurrency(amount, currencyCode)} at ${rate}% annual interest over ${duration} months. ` +
       `Your monthly payment would be ${formatCurrency(emi, currencyCode)}, totaling ${formatCurrency(totalPayment, currencyCode)} — meaning you'd pay ${formatCurrency(totalInterest, currencyCode)} (${interestPct}%) in interest alone. ` +
-      `${hiddenFees.length > 0 ? `We detected ${hiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
+      `${uniqueHiddenFees.length > 0 ? `We detected ${uniqueHiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
       `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."}`;
   } else {
-    summary = `Analysis of this financial document detected ${hiddenFees.length} fee(s) and ${warnings.length} warning(s). ` +
+    summary = `Analysis of this financial document detected ${uniqueHiddenFees.length} fee(s) and ${uniqueWarnings.length} warning(s). ` +
       `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."} ` +
       `Some financial values could not be determined — EMI calculations may be incomplete.`;
   }
@@ -263,18 +356,18 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
     insights.push(`Monthly EMI of ${formatCurrency(emi, currencyCode)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`);
   }
   insights.push(
-    hiddenFees.length >= 3
+    uniqueHiddenFees.length >= 3
       ? "Multiple fee types detected. Request a complete fee schedule and compare with competitors."
       : "Fee structure appears manageable, but always confirm all charges before signing."
   );
 
   const deception = detectDeception(text);
-  const advice = generateAdvice(riskScore, rate, totalInterest, amount, hiddenFees);
+  const advice = generateAdvice(riskScore, rate, totalInterest, amount, uniqueHiddenFees);
 
   return {
     summary,
-    hiddenFees,
-    warnings,
+    hiddenFees: uniqueHiddenFees,
+    warnings: uniqueWarnings,
     riskScore,
     insights,
     emi,

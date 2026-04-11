@@ -24,7 +24,7 @@ const modules = [
     id: "SYS.04",
     icon: Brain,
     title: "AI Insights Engine",
-    desc: "Provides actionable recommendations: negotiate better terms, compare alternatives, and understand your leverage as a borrower.",
+    desc: "Provides optional AI-enhanced recommendations while deterministic local analysis remains the default reliability layer.",
     hasApiTag: true,
   },
 ];
@@ -59,8 +59,8 @@ export function ArchitectureSection() {
             <span className="font-mono text-[10px] tracking-widest text-primary/60 mb-6 block">{mod.id}</span>
             {mod.hasApiTag && (
               <div className="absolute top-6 right-6 font-mono text-[10px] text-muted-foreground space-y-1">
-                <div className="text-primary/60">POST /api/v1/analyze</div>
-                <div className="text-primary/40">STATUS: 200 OK</div>
+                <div className="text-primary/60">AI MODE: OPTIONAL</div>
+                <div className="text-primary/40">LOCAL FALLBACK: ENABLED</div>
               </div>
             )}
             <div className="flex items-start gap-4">

@@ -13,7 +13,7 @@ import { LoanComparison } from "@/components/LoanComparison";
 import { SavingsCalculator } from "@/components/SavingsCalculator";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { analyzeLocally, extractValuesFromText, type ExtractedValues } from "@/lib/analyzeLocally";
-import { enhanceAnalysisWithAI } from "@/lib/analyzeWithAI";
+import { enhanceAnalysisWithAI, isAIEnhancementConfigured } from "@/lib/analyzeWithAI";
 import type { DeceptionResult } from "@/components/DeceptionDetector";
 import type { AdviceResult } from "@/components/SmartAdvice";
 
@@ -23,16 +23,19 @@ interface ExtendedResult extends AnalysisResult {
 }
 
 export default function Analyze() {
+  const aiConfigured = isAIEnhancementConfigured();
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<ExtendedResult | null>(null);
   const [loanParams, setLoanParams] = useState({ amount: 0, rate: 0, duration: 0 });
   const [extractedValues, setExtractedValues] = useState<ExtractedValues | null>(null);
   const [extractionWarning, setExtractionWarning] = useState<string | null>(null);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
 
   const handleAnalyze = async (text: string, amount: number, rate: number, duration: number) => {
     setIsLoading(true);
     setResult(null);
     setExtractionWarning(null);
+    setAiNotice(null);
 
     await new Promise((r) => setTimeout(r, 1500));
 
@@ -61,11 +64,18 @@ export default function Analyze() {
       setLoanParams({ amount: finalAmount, rate: finalRate, duration: finalDuration });
       const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration);
 
+      if (!aiConfigured) {
+        setAiNotice("AI enhancement is disabled (missing VITE_GEMINI_API_KEY). Using deterministic local analysis mode.");
+        setResult(analysis);
+        return;
+      }
+
       try {
         const enhanced = await enhanceAnalysisWithAI(text, analysis);
         setResult(enhanced);
       } catch (aiError) {
         console.error("AI enhancement failed, using local analysis:", aiError);
+        setAiNotice("AI enhancement failed. Falling back to deterministic local analysis mode.");
         setResult(analysis);
       }
     } catch (err) {
@@ -126,6 +136,17 @@ export default function Analyze() {
             >
               <AlertCircle className="w-4 h-4 text-yellow-500 mt-0.5 flex-shrink-0" />
               <p className="font-mono text-xs text-yellow-500">{extractionWarning}</p>
+            </motion.div>
+          )}
+
+          {aiNotice && !isLoading && result && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-start gap-3 px-4 py-3 border border-primary/30 bg-primary/5"
+            >
+              <AlertCircle className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
+              <p className="font-mono text-xs text-primary">{aiNotice}</p>
             </motion.div>
           )}
 
