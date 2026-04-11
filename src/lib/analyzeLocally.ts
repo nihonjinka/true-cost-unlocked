@@ -3,8 +3,74 @@ import type { AnalysisResult } from "@/components/AnalysisDashboard";
 import type { DeceptionResult } from "@/components/DeceptionDetector";
 import type { AdviceResult } from "@/components/SmartAdvice";
 
+export interface ExtractedValues {
+  loanAmount: number | null;
+  interestRate: number | null;
+  tenureMonths: number | null;
+  extracted: boolean;
+}
+
+export function extractValuesFromText(text: string): ExtractedValues {
+  let loanAmount: number | null = null;
+  let interestRate: number | null = null;
+  let tenureMonths: number | null = null;
+
+  // Extract loan/credit amount
+  const amountPatterns = [
+    /(?:loan|credit|principal|borrow|finance|amount)[^$\d]*\$\s*([\d,]+(?:\.\d+)?)/i,
+    /\$\s*([\d,]+(?:\.\d+)?)\s*(?:loan|credit|principal)/i,
+    /(?:up\s*to|maximum|limit)[^$\d]*\$\s*([\d,]+(?:\.\d+)?)/i,
+    /(?:amount|balance|sum)\s*(?:of|:)\s*\$?\s*([\d,]+(?:\.\d+)?)/i,
+  ];
+  for (const pattern of amountPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const val = parseFloat(match[1].replace(/,/g, ""));
+      if (val > 100) { loanAmount = val; break; }
+    }
+  }
+
+  // Extract interest rate / APR
+  const ratePatterns = [
+    /(?:apr|annual\s*percentage\s*rate|interest\s*rate)[^%\d]*(\d+(?:\.\d+)?)\s*%/i,
+    /(\d+(?:\.\d+)?)\s*%\s*(?:apr|annual|interest|variable|fixed)/i,
+    /(?:rate|apr)\s*(?:of|is|:)\s*(\d+(?:\.\d+)?)\s*%/i,
+    /(\d+(?:\.\d+)?)\s*%\s*(?:per\s*annum|p\.?a\.?)/i,
+  ];
+  for (const pattern of ratePatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const val = parseFloat(match[1]);
+      if (val > 0 && val < 100) { interestRate = val; break; }
+    }
+  }
+
+  // Extract tenure/duration
+  const tenurePatterns = [
+    /(\d+)\s*(?:months?|month\s*term|monthly\s*(?:payment|installment)s?)/i,
+    /(?:tenure|term|duration|period|repayment)\s*(?:of|is|:)?\s*(\d+)\s*(?:months?|mo)/i,
+    /(\d+)\s*(?:year|yr)s?\s*(?:term|tenure|duration|period|loan|repayment)?/i,
+    /(?:over|for|within)\s*(\d+)\s*months?/i,
+  ];
+  for (const pattern of tenurePatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      let val = parseInt(match[1] || match[2], 10);
+      // If matched via year pattern, convert
+      if (/year|yr/i.test(match[0]) && val < 100) val *= 12;
+      if (val > 0 && val <= 600) { tenureMonths = val; break; }
+    }
+  }
+
+  return {
+    loanAmount,
+    interestRate,
+    tenureMonths,
+    extracted: loanAmount !== null || interestRate !== null || tenureMonths !== null,
+  };
+}
+
 export function detectDeception(text: string): DeceptionResult {
-  const lower = text.toLowerCase();
   const urgencyTactics: string[] = [];
   const fakeDiscounts: string[] = [];
   const emotionalManipulation: string[] = [];
@@ -37,7 +103,8 @@ export function generateAdvice(riskScore: number, rate: number, totalInterest: n
   const reasons: string[] = [];
   if (rate > 20) reasons.push(`Interest rate of ${rate}% is well above the national average of ~11%.`);
   else if (rate > 10) reasons.push(`Interest rate of ${rate}% is moderate — shop around for sub-10% options.`);
-  else reasons.push(`Interest rate of ${rate}% is competitive.`);
+  else if (rate > 0) reasons.push(`Interest rate of ${rate}% is competitive.`);
+  else reasons.push("Interest rate could not be determined — verify before proceeding.");
 
   if (interestRatio > 0.5) reasons.push(`You'd pay ${(interestRatio * 100).toFixed(0)}% of the principal in interest — that's very expensive.`);
   if (hiddenFees.length > 0) reasons.push(`${hiddenFees.length} hidden fee(s) detected that increase the true cost.`);
@@ -59,7 +126,6 @@ export function generateAdvice(riskScore: number, rate: number, totalInterest: n
   return { recommendation, reasons, alternatives, tips };
 }
 
-// Client-side analysis (no AI needed)
 export function analyzeLocally(text: string, amount: number, rate: number, duration: number): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
   const { emi, totalPayment, totalInterest } = calculateEMI(amount, rate, duration);
   const lower = text.toLowerCase();
@@ -121,21 +187,33 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
 
   const interestPct = amount > 0 ? ((totalInterest / amount) * 100).toFixed(1) : "0";
 
-  const summary = `This agreement involves a loan/credit of $${amount.toLocaleString()} at ${rate}% annual interest over ${duration} months. ` +
-    `Your monthly payment would be $${emi.toFixed(2)}, totaling $${totalPayment.toFixed(2)} — meaning you'd pay $${totalInterest.toFixed(2)} (${interestPct}%) in interest alone. ` +
-    `${hiddenFees.length > 0 ? `We detected ${hiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
-    `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."}`;
+  let summary: string;
+  if (amount > 0 && rate > 0 && duration > 0) {
+    summary = `This agreement involves a loan/credit of $${amount.toLocaleString()} at ${rate}% annual interest over ${duration} months. ` +
+      `Your monthly payment would be $${emi.toFixed(2)}, totaling $${totalPayment.toFixed(2)} — meaning you'd pay $${totalInterest.toFixed(2)} (${interestPct}%) in interest alone. ` +
+      `${hiddenFees.length > 0 ? `We detected ${hiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
+      `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."}`;
+  } else {
+    summary = `Analysis of this financial document detected ${hiddenFees.length} fee(s) and ${warnings.length} warning(s). ` +
+      `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."} ` +
+      `Some financial values could not be determined — EMI calculations may be incomplete.`;
+  }
 
-  const insights = [
-    `At ${rate}% APR, you're paying ${interestPct}% extra over the loan term. Consider negotiating a lower rate.`,
-    totalInterest > amount * 0.3
-      ? "Your total interest exceeds 30% of the principal — this is an expensive loan. Shop around for better rates."
-      : "Your interest-to-principal ratio is within reasonable bounds for this rate.",
+  const insights: string[] = [];
+  if (amount > 0 && rate > 0 && duration > 0) {
+    insights.push(`At ${rate}% APR, you're paying ${interestPct}% extra over the loan term. Consider negotiating a lower rate.`);
+    insights.push(
+      totalInterest > amount * 0.3
+        ? "Your total interest exceeds 30% of the principal — this is an expensive loan. Shop around for better rates."
+        : "Your interest-to-principal ratio is within reasonable bounds for this rate."
+    );
+    insights.push(`Monthly EMI of $${emi.toFixed(2)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`);
+  }
+  insights.push(
     hiddenFees.length >= 3
       ? "Multiple fee types detected. Request a complete fee schedule and compare with competitors."
-      : "Fee structure appears manageable, but always confirm all charges before signing.",
-    `Monthly EMI of $${emi.toFixed(2)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`,
-  ];
+      : "Fee structure appears manageable, but always confirm all charges before signing."
+  );
 
   const deception = detectDeception(text);
   const advice = generateAdvice(riskScore, rate, totalInterest, amount, hiddenFees);
