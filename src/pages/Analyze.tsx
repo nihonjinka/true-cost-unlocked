@@ -70,7 +70,7 @@ export default function Analyze() {
   const hasFinancials = loanParams.amount > 0 && loanParams.rate > 0 && loanParams.duration > 0;
 
   return (
-    <div className="min-h-screen bg-background grid-bg scanline">
+    <div className="page-enter min-h-screen bg-background grid-bg scanline">
       <div className="max-w-5xl mx-auto px-4 py-8">
         <motion.header
           initial={{ opacity: 0, y: -10 }}
@@ -80,7 +80,7 @@ export default function Analyze() {
           <div className="flex items-center gap-4">
             <Link
               to="/"
-              className="flex items-center gap-2 font-mono text-[11px] tracking-widest uppercase text-muted-foreground hover:text-primary transition-colors"
+              className="interactive-button flex items-center gap-2 font-mono text-[11px] tracking-widest uppercase text-muted-foreground hover:text-primary transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               BACK
