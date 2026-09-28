@@ -245,3 +245,4 @@ export async function regenerateCounterOfferEmail(text: string): Promise<string>
   const emailText = extractResponseText(payload);
   return emailText.trim();
 }
+
