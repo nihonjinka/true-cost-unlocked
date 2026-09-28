@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { FileText, Sparkles, Play, RotateCcw, Cpu } from "lucide-react";
-import { DEMO_TEXT, DEMO_LOAN } from "@/lib/financial";
+import { DEMO_TEXT, DEMO_LOAN, type SupportedCurrency } from "@/lib/financial";
 
 interface AnalysisInputProps {
-  onAnalyze: (text: string, amount: number, rate: number, duration: number) => void;
+  onAnalyze: (text: string, amount: number, rate: number, duration: number, currency: SupportedCurrency) => void;
   isLoading: boolean;
   extractedValues?: { loanAmount: number | null; interestRate: number | null; tenureMonths: number | null } | null;
 }
@@ -14,6 +14,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
   const [amount, setAmount] = useState<number | "">("");
   const [rate, setRate] = useState<number | "">("");
   const [duration, setDuration] = useState<number | "">("");
+  const [currency, setCurrency] = useState<SupportedCurrency>("USD");
   const [autoFilled, setAutoFilled] = useState(false);
 
   // Auto-fill fields when extracted values arrive
@@ -94,9 +95,27 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
               </span>
             )}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div>
+              <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">Currency</label>
+              <select
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value as SupportedCurrency)}
+                className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground focus:outline-none focus:border-primary/40 transition-colors appearance-none"
+              >
+                <option value="USD">USD ($)</option>
+                <option value="INR">INR (₹ / Rs)</option>
+                <option value="EUR">EUR (€)</option>
+                <option value="GBP">GBP (£)</option>
+                <option value="JPY">JPY (¥)</option>
+                <option value="CAD">CAD (C$)</option>
+                <option value="AUD">AUD (A$)</option>
+                <option value="SGD">SGD (S$)</option>
+                <option value="AED">AED (د.إ)</option>
+              </select>
+            </div>
             {[
-              { label: "Loan Amount", value: amount, set: (v: number | "") => { setAmount(v); setAutoFilled(false); }, ph: "Auto-extract (currency-aware)" },
+              { label: "Loan Amount", value: amount, set: (v: number | "") => { setAmount(v); setAutoFilled(false); }, ph: "Auto-extract" },
               { label: "Interest Rate (%)", value: rate, set: (v: number | "") => { setRate(v); setAutoFilled(false); }, ph: "Auto-extract" },
               { label: "Duration (months)", value: duration, set: (v: number | "") => { setDuration(v); setAutoFilled(false); }, ph: "Auto-extract" },
             ].map((field) => (
@@ -121,7 +140,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           <motion.button
             whileTap={{ scale: 0.97 }}
             disabled={!canAnalyze || isLoading}
-            onClick={() => onAnalyze(text, Number(amount) || 0, Number(rate) || 0, Number(duration) || 0)}
+            onClick={() => onAnalyze(text, Number(amount) || 0, Number(rate) || 0, Number(duration) || 0, currency)}
             className="interactive-button flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-mono text-[11px] tracking-widest uppercase disabled:opacity-40 disabled:cursor-not-allowed transition-all terminal-glow"
           >
             <Play className="w-4 h-4" />

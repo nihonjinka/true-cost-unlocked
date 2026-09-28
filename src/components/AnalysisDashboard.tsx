@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { Shield, AlertTriangle, DollarSign, Brain, FileWarning, TrendingUp } from "lucide-react";
+import TerminalCard from "./TerminalCard";
 import { AnimatedCounter } from "./AnimatedCounter";
 import { RiskMeter } from "./RiskMeter";
 import { formatCurrency, getCurrencyLocale, getCurrencySymbol, type SupportedCurrency } from "@/lib/financial";
@@ -15,38 +16,17 @@ export interface AnalysisResult {
   totalInterest: number;
   principal: number;
   currencyCode: SupportedCurrency;
+  negotiationStrategy?: string[];
+  legalLoopholes?: string[];
+  counterOfferEmail?: string;
+  rawText: string;
 }
 
 interface Props {
   result: AnalysisResult;
 }
 
-function TerminalCard({ children, className = "", title, icon: Icon, tag, delay = 0 }: {
-  children: React.ReactNode;
-  className?: string;
-  title: string;
-  icon: React.ElementType;
-  tag?: string;
-  delay?: number;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.4 }}
-      className={`terminal-card ${className}`}
-    >
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <div className="flex items-center gap-2">
-          <Icon className="w-4 h-4 text-primary" />
-          <span className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">{title}</span>
-        </div>
-        {tag && <span className="font-mono text-[10px] font-semibold text-destructive">{tag}</span>}
-      </div>
-      <div className="p-4">{children}</div>
-    </motion.div>
-  );
-}
+
 
 export function AnalysisDashboard({ result }: Props) {
   const currencySymbol = getCurrencySymbol(result.currencyCode);
@@ -149,6 +129,45 @@ export function AnalysisDashboard({ result }: Props) {
               >
                 <span className="text-primary mt-0.5">▸</span>
                 <span className="text-foreground">{insight}</span>
+              </motion.li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {/* Negotiation & Loopholes (AI Enhanced) */}
+      {(result.negotiationStrategy && result.negotiationStrategy.length > 0) && (
+        <TerminalCard title="NEGOTIATION PLAYBOOK" icon={Brain} delay={0.8}>
+          <ul className="space-y-3">
+            {result.negotiationStrategy.map((strategy, i) => (
+              <motion.li
+                key={i}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.8 + i * 0.08 }}
+                className="flex items-start gap-3 font-mono text-sm"
+              >
+                <span className="text-green-500 mt-0.5">✔</span>
+                <span className="text-foreground">{strategy}</span>
+              </motion.li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {(result.legalLoopholes && result.legalLoopholes.length > 0) && (
+        <TerminalCard title="LEGAL LOOPHOLES & TRAPS" icon={FileWarning} delay={0.9} className="border-destructive/30">
+          <ul className="space-y-3">
+            {result.legalLoopholes.map((loophole, i) => (
+              <motion.li
+                key={i}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.9 + i * 0.08 }}
+                className="flex items-start gap-3 font-mono text-sm"
+              >
+                <span className="text-destructive mt-0.5">☢</span>
+                <span className="text-destructive/90">{loophole}</span>
               </motion.li>
             ))}
           </ul>

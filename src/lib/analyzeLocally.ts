@@ -245,9 +245,9 @@ export function generateAdvice(riskScore: number, rate: number, totalInterest: n
   return { recommendation, reasons, alternatives, tips };
 }
 
-export function analyzeLocally(text: string, amount: number, rate: number, duration: number): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
+export function analyzeLocally(text: string, amount: number, rate: number, duration: number, overrideCurrency?: SupportedCurrency): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
   const { emi, totalPayment, totalInterest } = calculateEMI(amount, rate, duration);
-  const currencyCode = detectCurrencyCode(text);
+  const currencyCode = overrideCurrency || detectCurrencyCode(text);
 
   const hiddenFees: string[] = [];
   const warnings: string[] = [];
@@ -377,5 +377,6 @@ export function analyzeLocally(text: string, amount: number, rate: number, durat
     currencyCode,
     deception,
     advice,
+    rawText: text,
   };
 }

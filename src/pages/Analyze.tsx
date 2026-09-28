@@ -9,6 +9,7 @@ import { WorstCaseSimulator } from "@/components/WorstCaseSimulator";
 import { AmortizationTable } from "@/components/AmortizationTable";
 import { DeceptionDetector } from "@/components/DeceptionDetector";
 import { SmartAdvice } from "@/components/SmartAdvice";
+import CounterOfferEmail from "@/components/CounterOfferEmail";
 import { LoanComparison } from "@/components/LoanComparison";
 import { SavingsCalculator } from "@/components/SavingsCalculator";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -31,7 +32,7 @@ export default function Analyze() {
   const [extractionWarning, setExtractionWarning] = useState<string | null>(null);
   const [aiNotice, setAiNotice] = useState<string | null>(null);
 
-  const handleAnalyze = async (text: string, amount: number, rate: number, duration: number) => {
+  const handleAnalyze = async (text: string, amount: number, rate: number, duration: number, manualCurrency: SupportedCurrency) => {
     setIsLoading(true);
     setResult(null);
     setExtractionWarning(null);
@@ -62,7 +63,7 @@ export default function Analyze() {
       }
 
       setLoanParams({ amount: finalAmount, rate: finalRate, duration: finalDuration });
-      const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration);
+      const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration, manualCurrency);
 
       if (!aiConfigured) {
         setAiNotice("AI enhancement is disabled (missing VITE_GEMINI_API_KEY). Using deterministic local analysis mode.");
@@ -154,6 +155,7 @@ export default function Analyze() {
             <>
               <AnalysisDashboard result={result} />
               <DeceptionDetector deception={result.deception} />
+              <CounterOfferEmail initialEmail={result.counterOfferEmail} rawText={result.rawText} />
               <SmartAdvice advice={result.advice} />
               {hasFinancials && (
                 <>

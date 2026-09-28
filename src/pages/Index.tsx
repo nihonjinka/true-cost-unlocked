@@ -4,6 +4,7 @@ import { HeroSection } from "@/components/landing/HeroSection";
 import { AuditTicker } from "@/components/landing/AuditTicker";
 import { ProblemSection } from "@/components/landing/ProblemSection";
 import { ArchitectureSection } from "@/components/landing/ArchitectureSection";
+import { AIFeaturesSection } from "@/components/landing/AIFeaturesSection";
 import { PathwaySection } from "@/components/landing/PathwaySection";
 import { TestimonialSection } from "@/components/landing/TestimonialSection";
 import { PricingSection } from "@/components/landing/PricingSection";
@@ -19,6 +20,7 @@ export default function Index() {
         <AuditTicker />
         <ProblemSection />
         <ArchitectureSection />
+        <AIFeaturesSection />
         <PathwaySection />
         <TestimonialSection />
         <PricingSection />
