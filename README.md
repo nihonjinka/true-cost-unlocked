@@ -39,6 +39,16 @@ npm run dev -- --host 0.0.0.0 --port 5175
 
 Open: http://localhost:5175
 
+## OpenRouter Setup
+
+The AI-enhanced analysis uses OpenRouter. Set this environment variable before running the app:
+
+```bash
+VITE_OPENROUTER_API_KEY=your_openrouter_api_key
+```
+
+For local development, put it in a `.env.local` file at the repo root. On Netlify, add the same key in Site settings > Environment variables, then redeploy.
+
 ## Scripts
 
 ```bash

@@ -66,7 +66,7 @@ export default function Analyze() {
       const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration, manualCurrency);
 
       if (!aiConfigured) {
-        setAiNotice("AI enhancement is disabled (missing VITE_GEMINI_API_KEY). Using deterministic local analysis mode.");
+        setAiNotice("AI enhancement is disabled (missing VITE_OPENROUTER_API_KEY). Using deterministic local analysis mode.");
         setResult(analysis);
         return;
       }
