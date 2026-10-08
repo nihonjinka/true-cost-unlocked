@@ -57,6 +57,7 @@ export interface CostFinding {
   negated: boolean;
   /** True when the clause names a charge but does not quantify it. */
   amountNotStated?: boolean;
+  qualifier?: string | null;
   /** Tax embedded in a composite expression such as "$100 + 18% GST". */
   taxAmount?: number | null;
   taxPercent?: number | null;

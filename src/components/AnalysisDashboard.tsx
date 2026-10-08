@@ -69,10 +69,75 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
         </TerminalCard>
       )}
 
+      {!context.calculator.available && (
+        <TerminalCard title="PARTIAL CALCULATION" icon={AlertTriangle} delay={0.3}>
+          <p className="font-mono text-sm text-muted-foreground">
+            {context.calculator.label} needs: {context.calculator.missingInputs.join(", ")}.
+          </p>
+          <p className="font-mono text-[10px] text-muted-foreground mt-2">
+            Findings still contribute to the risk score. Calculation-dependent results appear when their inputs are available.
+          </p>
+        </TerminalCard>
+      )}
+
+      {context.confidenceIssues.length > 0 && (
+        <TerminalCard title="FIELDS TO VERIFY" icon={AlertTriangle} delay={0.32}>
+          <ul className="space-y-1">
+            {context.confidenceIssues.map((issue, index) => (
+              <li key={index} className="font-mono text-xs text-muted-foreground">{issue}</li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {context.itemGroups.length > 0 && (
+        <TerminalCard title="EXPANDED ITEM LISTS" icon={FileWarning} delay={0.34}>
+          {context.itemGroups.map((group) => (
+            <div key={group.id} className="space-y-2 mb-4 last:mb-0">
+              <div className="flex justify-between gap-3 font-mono text-xs">
+                <span className="text-foreground">{group.label}</span>
+                <span className="font-bold">{formatCurrency(group.aggregate, context.currencyCode)} total</span>
+              </div>
+              <ul className="space-y-1">
+                {group.items.map((item, index) => (
+                  <li key={group.id + ":" + index} className="flex justify-between gap-3 font-mono text-[11px] text-muted-foreground">
+                    <span>{item.label || "Unclassified item"} · {item.source}</span>
+                    <span className="shrink-0">{formatCurrency(item.amount, context.currencyCode)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </TerminalCard>
+      )}
+
+      {context.reconciliations.length > 0 && (
+        <TerminalCard title="AMOUNT RECONCILIATION" icon={TrendingUp} delay={0.36}>
+          <ul className="space-y-2">
+            {context.reconciliations.map((check) => (
+              <li key={check.id} className="font-mono text-xs">
+                <span className={check.matched ? "text-primary" : "text-destructive"}>{check.expression} {check.matched ? "matches" : "does not match"}</span>
+                {check.undisclosedItems.length > 0 && (
+                  <p className="mt-1 text-muted-foreground">Stated but unquantified: {check.undisclosedItems.join(", ")}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {context.addOnImpact && (
+        <TerminalCard title="FINANCED ADD-ON IMPACT" icon={TrendingUp} delay={0.38}>
+          <p className="font-mono text-sm">
+            {formatCurrency(context.addOnImpact.amount, context.currencyCode)} in listed add-ons adds about {formatCurrency(context.addOnImpact.paymentIncrease, context.currencyCode)} per month and {formatCurrency(context.addOnImpact.totalPaymentIncrease, context.currencyCode)} over the term, including {formatCurrency(context.addOnImpact.interestIncrease, context.currencyCode)} in additional interest.
+          </p>
+        </TerminalCard>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <TerminalCard title="RISK ASSESSMENT" icon={Shield} delay={0.35} className="flex flex-col">
           <div className="flex items-center justify-center py-2"><RiskMeter score={context.riskScore} band={context.riskBand} /></div>
-          <p className="text-center font-mono text-[10px] text-muted-foreground mt-1">Extraction confidence: {Math.round(context.confidence * 100)}%</p>
+          <p className="text-center font-mono text-[10px] text-muted-foreground mt-1">Risk from detected findings · extraction confidence: {Math.round(context.confidence * 100)}%</p>
           {context.riskBreakdown.length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-border pt-2">
               {context.riskBreakdown.map((item) => (

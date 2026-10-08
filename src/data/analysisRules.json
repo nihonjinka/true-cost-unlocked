@@ -26,9 +26,17 @@
       "unknown": "reducing_balance"
     }
   },
+  "calculatorInputs": {
+    "reducing_balance": ["principal", "rate", "term"],
+    "reducing_balance_with_offsets_and_tax": ["principal", "rate", "term"],
+    "flat": ["principal", "rate", "term"],
+    "short_term": ["principal", "rate", "term"],
+    "revolving": ["principal", "rate", "payment_rule"],
+    "cash_price_vs_total": ["cash_price", "scheduled_total"]
+  },
   "listCategories": [
-    { "id": "financed_addon", "labelPattern": "financed\\s+(?:add[- ]?ons?|items?|products?)|optional\\s+(?:add[- ]?ons?|products?)|additional\\s+(?:products?|items?)", "category": "financed_addon" },
-    { "id": "fee_list", "labelPattern": "fees?|charges?", "category": "upfront_fee" }
+    { "id": "financed_addon", "labelPattern": "financed\\s+(?:add[- ]?ons?|items?|products?|upgrades?)|optional\\s+(?:add[- ]?ons?|products?|equipment|items?)|additional\\s+(?:products?|items?|options?|equipment|upgrades?)", "category": "financed_addon" },
+    { "id": "fee_list", "labelPattern": "^(?:fees?|charges?)$", "category": "upfront_fee" }
   ],
   "unquantifiedTerms": [
     { "id": "negative_equity", "label": "Rolled-in negative equity", "pattern": "negative\\s+equity|roll(?:ed)?\\s+over\\s+(?:the\\s+)?(?:old\\s+)?loan\\s+balance|prior\\s+loan\\s+balance", "category": "negative_equity", "severity": 3 },
@@ -74,16 +82,17 @@
     { "id": "prepayment", "label": "Prepayment or foreclosure charge", "patterns": ["prepayment\\s+(?:penalty|charge|fee)", "foreclosure\\s+(?:charge|fee|penalty)"], "category": "prepayment", "severity": 2, "explanation": "Charge for repaying or closing the loan early." },
     { "id": "negative_equity", "label": "Rolled-in negative equity", "patterns": ["negative\\s+equity", "roll(?:ed)?\\s+over\\s+(?:the\\s+)?(?:old\\s+)?loan\\s+balance", "prior\\s+loan\\s+balance"], "category": "negative_equity", "severity": 3, "explanation": "Prior debt may be rolled into the new financing." }
     ,{ "id": "dealer_compensation", "label": "Dealer compensation or markup", "patterns": ["dealer\\s+(?:may\\s+)?receive\\s+compensation", "dealer\\s+compensation", "dealer\\s+markup", "kickbacks?", "commissions?"], "category": "conflict_of_interest", "severity": 3, "explanation": "The dealer or intermediary may receive compensation tied to this transaction." },
-    { "id": "discount_offset", "label": "Discount or interest offset", "patterns": ["instant\\s+discount", "cashback", "rebate", "discount.{0,60}(?:offset|interest)|offset.{0,60}discount"], "category": "offset", "severity": 0, "explanation": "A stated discount or cashback offsets the transaction cost." },
-    { "id": "generic_tax", "label": "Tax on financing cost", "patterns": ["(?:gst|vat|sales\\s+tax)\\s*@?\\s*\\d+(?:\\.\\d+)?%", "tax(?:es)?\\s+(?:of|at)\\s+\\d+(?:\\.\\d+)?%"], "category": "tax", "severity": 2, "explanation": "Tax is applied to a stated financing amount or basis." }
+    { "id": "discount_offset", "label": "Discount or interest offset", "patterns": ["\\b(?:instant\\s+)?discount\\b", "\\bcashback\\b", "\\brebate\\b", "\\boffset\\s+credit\\b", "discount.{0,60}(?:offset|interest)|offset.{0,60}discount"], "category": "offset", "severity": 0, "explanation": "A stated discount or cashback offsets the transaction cost." },
+    { "id": "generic_tax", "label": "Tax on financing cost", "patterns": ["(?:(?:gst|vat|hst|pst|sales\\s+tax)\\s*(?:(?:@|at)\\s*)?\\d+(?:\\.\\d+)?%|tax(?:es)?\\s*(?:(?:@|at)\\s*)?\\d+(?:\\.\\d+)?%)", "tax(?:es)?\\s+(?:of|at)\\s+\\d+(?:\\.\\d+)?%"], "category": "tax", "severity": 2, "explanation": "Tax is applied to a stated financing amount or basis." }
   ],
   "claimCatalog": [
-    { "id": "no_cost", "label": "No-cost claim", "pattern": "no[- ]cost|100%\\s+free|completely\\s+free", "predicates": ["positive_net_cost", "listed_charge"] },
+    { "id": "no_cost", "label": "No-cost claim", "pattern": "no[- ]cost|100%\\s+free|completely\\s+free", "predicates": ["listed_charge", "positive_net_cost"] },
+    { "id": "free", "label": "Free claim", "pattern": "(?<!interest[- ])\\bfree\\b", "predicates": ["listed_charge"] },
     { "id": "no_fees", "label": "No-fees claim", "pattern": "no\\s+(?:additional\\s+)?fees?|zero\\s+fees?", "predicates": ["listed_charge"] },
-    { "id": "interest_free", "label": "Interest-free claim", "pattern": "interest[- ]free|0%\\s+(?:apr|interest)", "predicates": ["positive_rate"] },
+    { "id": "interest_free", "label": "Interest-free claim", "pattern": "interest[- ]free|no\\s+interest|0%\\s+(?:apr|interest)", "predicates": ["positive_rate"] },
     { "id": "optional", "label": "Optional claim", "pattern": "optional|opt\\s+out", "predicates": ["included_despite_optional"] },
     { "id": "guaranteed", "label": "Guaranteed claim", "pattern": "guaranteed(?:\\s+approval|\\s+rate|\\s+acceptance)?", "predicates": ["conditional_guarantee"] },
-    { "id": "dealer_compensation_disclosure", "label": "Dealer compensation disclosure", "pattern": "dealer\\s+(?:may\\s+)?receive\\s+compensation|dealer\\s+markup|kickbacks?|commissions?", "predicates": [] }
+    { "id": "conditional_language", "label": "Conditional wording", "pattern": "\\b(?:may|might|could)\\b", "predicates": ["hedge_word_present"] }
   ],
   "riskRules": [
     { "id": "claim_contradiction", "category": "claims", "weight": 20, "pattern": "" },
@@ -100,7 +109,19 @@
     { "id": "advance_fee_scam", "category": "fraud", "weight": 25, "pattern": "" }
     ,{ "id": "dealer_compensation", "category": "conflict_of_interest", "weight": 12, "pattern": "dealer\\s+(?:may\\s+)?receive\\s+compensation|dealer\\s+markup|kickbacks?|commissions?" }
   ],
-  "riskCategoryCaps": { "claims": 30, "pricing": 30, "legal": 20, "privacy": 10, "credit": 10, "fraud": 30, "fees": 20, "document_type": 25 },
+  "riskCategoryCaps": { "claims": 30, "pricing": 30, "legal": 20, "privacy": 10, "credit": 10, "fraud": 30, "fees": 20, "document_type": 25, "conflict_of_interest": 20, "financed_addon": 20, "tax": 15, "penalty": 20 },
+  "categoryGlossary": [
+    { "category": "financed_addon", "term": "Financed add-on", "definition": "An optional product or item added to the financed amount can increase the payment and interest over the loan term." },
+    { "category": "tax", "term": "Tax on financing cost", "definition": "A tax assessed on interest or fees increases the amount paid beyond the stated financing charge." },
+    { "category": "offset", "term": "Discount or offset", "definition": "A discount or cashback reduces cost only to the extent that it is actually applied to the amount owed." },
+    { "category": "upfront_fee", "term": "Upfront fee", "definition": "A one-time charge may be paid at signing or added to the financed balance." },
+    { "category": "recurring_fee", "term": "Recurring fee", "definition": "A repeating charge can add to each payment or recur during the agreement." },
+    { "category": "penalty", "term": "Penalty fee", "definition": "A contingent charge can apply after a missed payment or other specified event." },
+    { "category": "prepayment", "term": "Prepayment charge", "definition": "A charge may apply when the balance is repaid before the scheduled end of the agreement." },
+    { "category": "conflict_of_interest", "term": "Dealer compensation", "definition": "Dealer or intermediary compensation can create an incentive tied to a particular financing offer." },
+    { "category": "negative_equity", "term": "Negative equity", "definition": "Prior debt may be rolled into a new agreement and increase the amount financed." },
+    { "category": "undisclosed_amount", "term": "Unquantified amount", "definition": "A named charge or debt has no stated value, so the disclosed total may be incomplete." }
+  ],
   "glossary": [
     { "id": "deferred_interest", "term": "Deferred interest", "pattern": "deferred\\s+interest|retroactive\\w*", "definition": "Interest may be charged later for an earlier promotional period if the required balance is not paid by its deadline." },
     { "id": "amount_financed", "term": "Amount financed", "pattern": "amount\\s+financed", "definition": "The amount of credit being advanced, which can include optional products and other rolled-in charges." },

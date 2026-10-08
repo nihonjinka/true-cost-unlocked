@@ -6,7 +6,16 @@ type LabelRule = { id: string; pattern: string; score: number; kind: "principal"
 type DocumentRule = { id: DocumentType; label: string; signals: Array<{ pattern: string; weight: number }> };
 type FeeRule = { id: string; label: string; patterns: string[]; category: string; severity: number; explanation: string };
 type Clause = { text: string; start: number; end: number };
-type ParsedValue = { amount: number | null; percent: number | null; basis: string | null; frequency: string | null; qualifier: string | null; currency: string | null; span: [number, number] };
+export interface ParsedMonetaryValue {
+  amount: number | null;
+  percent: number | null;
+  basis: string | null;
+  frequency: string | null;
+  qualifier: string | null;
+  currency: string | null;
+  span: [number, number];
+  tax?: { percent: number; basis: string };
+}
 const config = rules as {
   segmentation: { abbreviations: string[] };
   monetaryBases: Array<{ id: string; pattern: string }>;
@@ -28,14 +37,42 @@ const MULTIPLIERS: Record<string, number> = { thousand: 1e3, k: 1e3, million: 1e
 
 const CURRENCY_CODES: Record<string, string> = { "₹": "INR", INR: "INR", "Rs": "INR", "Rs.": "INR", "€": "EUR", EUR: "EUR", "£": "GBP", GBP: "GBP", "¥": "JPY", JPY: "JPY", "C$": "CAD", CAD: "CAD", "A$": "AUD", AUD: "AUD", "S$": "SGD", SGD: "SGD", AED: "AED", USD: "USD", "US$": "USD", "$": "USD" };
 
+function isCompleteMoneyMatch(text: string, match: RegExpMatchArray): boolean {
+  if (match.index === undefined || !match.groups?.amount) return false;
+  const start = match.index;
+  const end = start + match[0].length;
+  const before = text[start - 1] ?? "";
+  const after = text[end] ?? "";
+  if (/\d/.test(before) || /\d/.test(after) || (after === "," && /\d/.test(text[end + 1] ?? ""))
+    || (after === "." && /\d/.test(text[end + 1] ?? ""))) return false;
+  if (/^\s*%/.test(text.slice(end, end + 4))) return false;
+  if (!match.groups.currency && /^\s*(?:years?|yrs?|months?|mos?|weeks?|days?|fortnights?)\b/i.test(text.slice(end, end + 20))) return false;
+  return true;
+}
+
 function sentenceBoundary(text: string, index: number): boolean {
   const char = text[index];
   if (!/[.!?;]/.test(char ?? "")) return false;
   if (char === "." && /\d/.test(text[index - 1] ?? "") && /\d/.test(text[index + 1] ?? "")) return false;
   if (char === ".") {
     const prefix = text.slice(Math.max(0, index - 12), index + 1);
+    for (const item of config.segmentation.abbreviations) {
+      const dotPositions = Array.from(item.matchAll(/\./g)).map((match) => match.index ?? 0);
+      for (const dotPosition of dotPositions) {
+        const start = index - dotPosition;
+        const candidate = text.slice(start, start + item.length);
+        const before = text[start - 1] ?? "";
+        const after = text[start + item.length] ?? "";
+        if (start >= 0 && (!before || /[\s([{,:;]/.test(before)) && candidate.toLowerCase() === item.toLowerCase()
+          && (!after || /[\s)\]},:;!?]/.test(after))) return false;
+      }
+    }
     const abbreviation = config.segmentation.abbreviations.find((item) => prefix.toLowerCase().endsWith(item.toLowerCase()));
-    if (abbreviation) return false;
+    if (abbreviation) {
+      const start = index - abbreviation.length + 1;
+      const before = text[start - 1] ?? "";
+      if (!before || /[\s([{,:;]/.test(before)) return false;
+    }
   }
   return true;
 }
@@ -76,12 +113,12 @@ export function segmentClauses(text: string): Clause[] {
   return clauses;
 }
 
-export function parseMonetaryValues(text: string, baseOffset = 0): ParsedValue[] {
-  const values: ParsedValue[] = [];
+export function parseMonetaryValues(text: string, baseOffset = 0): ParsedMonetaryValue[] {
+  const values: ParsedMonetaryValue[] = [];
   const percentRegex = /(?<percent>\d+(?:\.\d+)?)\s*%/g;
   const percentMatches = Array.from(text.matchAll(percentRegex));
   const moneyRegex = new RegExp(MONEY_TOKEN, "gi");
-  const moneyMatches = Array.from(text.matchAll(moneyRegex)).filter((match) => match.groups?.amount && match.index !== undefined);
+  const moneyMatches = Array.from(text.matchAll(moneyRegex)).filter((match) => isCompleteMoneyMatch(text, match));
   const frequency = /per\s+(?:installment|instalment|payment)/i.test(text) ? "per_installment"
     : /per\s+month|monthly/i.test(text) ? "monthly"
       : /per\s+year|annual|yearly/i.test(text) ? "annual"
@@ -95,7 +132,17 @@ export function parseMonetaryValues(text: string, baseOffset = 0): ParsedValue[]
     const unit = g.unit?.toLowerCase();
     const parsed = amount * (unit ? MULTIPLIERS[unit] ?? 1 : 1);
     const token = g.currency?.trim() ?? "";
-    values.push({ amount: parsed, percent: null, basis, frequency, qualifier, currency: token ? CURRENCY_CODES[token] ?? null : null, span: [baseOffset + match.index!, baseOffset + match.index! + match[0].length] });
+    const composite = /^\s*\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:gst|vat|hst|pst|tax|sales\s+tax)\b/i.exec(text.slice(match.index! + match[0].length));
+    values.push({
+      amount: parsed,
+      percent: null,
+      basis: composite ? "fee" : basis,
+      frequency,
+      qualifier,
+      currency: token ? CURRENCY_CODES[token] ?? Object.entries(CURRENCY_CODES).find(([key]) => key.toLowerCase() === token.toLowerCase())?.[1] ?? null : null,
+      span: [baseOffset + match.index!, baseOffset + match.index! + match[0].length],
+      tax: composite ? { percent: Number(composite[1]), basis: "fee" } : undefined,
+    });
   }
   for (const match of percentMatches) {
     if (match.index === undefined) continue;
@@ -141,6 +188,7 @@ export function extractAmountCandidates(text: string): ExtractedCandidate[] {
   for (const match of text.matchAll(regex)) {
     const groups = match.groups;
     if (!groups || match.index === undefined) continue;
+    if (!isCompleteMoneyMatch(text, match)) continue;
     const value = parseAmount(`${groups.amount}${groups.decimal ? `.${groups.decimal}` : ""}`);
     if (value === null || value <= 0) continue;
     const unit = groups.unit?.toLowerCase();
@@ -214,19 +262,6 @@ export function extractStatedEMI(text: string, candidates = extractAmountCandida
   return { value: null, source: null, confidence: 0, alternatives: [], needsReview: false };
 }
 
-function findClause(text: string, start: number, end: number): { source: string; start: number } {
-  const isDelimiter = (index: number) => {
-    const character = text[index];
-    if (character === "." && /\d/.test(text[index - 1] ?? "") && /\d/.test(text[index + 1] ?? "")) return false;
-    return /[.!?;\n]/.test(character ?? "");
-  };
-  let clauseStart = start;
-  let clauseEnd = end;
-  while (clauseStart > 0 && !isDelimiter(clauseStart - 1)) clauseStart--;
-  while (clauseEnd < text.length && !isDelimiter(clauseEnd)) clauseEnd++;
-  return { source: text.slice(clauseStart, clauseEnd).trim(), start: clauseStart };
-}
-
 function isNegated(clause: string): boolean {
   if (/\bwaived\s+for\s+(?:the\s+)?first\s+(?:year|month)\b/i.test(clause)) return false;
   return /\b(?:no|none|not\s+(?:charged|applicable|apply|subject\s+to|assessed)|waived|free of|without)\b/i.test(clause)
@@ -295,6 +330,282 @@ export function detectCosts(text: string, principal: number | null, installmentC
   return findings;
 }
 
+function findClause(text: string, start: number, end: number): { source: string; start: number } {
+  const clause = clauseAt(text, start);
+  return { source: clause.text, start: clause.start };
+}
+
+function findStructuredAmount(text: string, startAt = 0): { amount: number; start: number; end: number; token: string } | null {
+  const scanText = text.slice(startAt);
+  const matcher = new RegExp(MONEY_TOKEN, "gi");
+  const match = Array.from(scanText.matchAll(matcher)).find((candidate) => isCompleteMoneyMatch(scanText, candidate));
+  if (!match?.groups?.amount || match.index === undefined) return null;
+  const value = parseAmount(match.groups.amount);
+  if (value === null) return null;
+  const unit = match.groups.unit?.toLowerCase();
+  return {
+    amount: value * (unit ? MULTIPLIERS[unit] ?? 1 : 1),
+    start: startAt + match.index,
+    end: startAt + match.index + match[0].length,
+    token: match[0],
+  };
+}
+
+function findStructuredPercent(text: string, startAt = 0): number | null {
+  const match = /(\d+(?:\.\d+)?)\s*%/.exec(text.slice(startAt));
+  return match ? Number(match[1]) : null;
+}
+
+function findFeeRule(source: string): FeeRule | undefined {
+  return config.feeCatalog.find((item) => item.patterns.some((pattern) => new RegExp(pattern, "i").test(source)));
+}
+
+function expandConfiguredList(clause: Clause): { findings: CostFinding[]; group: LineItemGroup } | null {
+  const labeled = /^\s*(?<label>[^:]{2,70}):(?<body>[\s\S]+)$/.exec(clause.text);
+  if (!labeled?.groups) return null;
+  const label = labeled.groups.label.trim();
+  const listRule = config.listCategories.find((item) => new RegExp(item.labelPattern, "i").test(label));
+  if (!listRule) return null;
+  const body = labeled.groups.body;
+  const bodyOffset = clause.text.indexOf(body);
+  const tokens = Array.from(body.matchAll(new RegExp(MONEY_TOKEN, "gi")))
+    .filter((match) => isCompleteMoneyMatch(body, match))
+    .map((match) => {
+      const value = parseAmount(match.groups!.amount);
+      const unit = match.groups!.unit?.toLowerCase();
+      return value === null ? null : { amount: value * (unit ? MULTIPLIERS[unit] ?? 1 : 1), start: match.index!, end: match.index! + match[0].length, token: match[0] };
+    }).filter((token): token is { amount: number; start: number; end: number; token: string } => token !== null);
+  if (tokens.length < 2) return null;
+  const groupId = listRule.id + "_" + clause.start;
+  const items: LineItemGroup["items"] = [];
+  const findings: CostFinding[] = [];
+  tokens.forEach((token, index) => {
+    const from = index === 0 ? 0 : tokens[index - 1].end;
+    const rawPrefix = body.slice(from, token.start);
+    const name = rawPrefix.replace(/^[\s,;&]+/, "").replace(/\band\b\s*$/i, "").replace(/[,;]\s*$/, "").trim();
+    const localStart = Math.max(0, from + Math.max(0, rawPrefix.search(/\S/)));
+    const startInClause = bodyOffset + localStart;
+    const evidence = clause.text.slice(startInClause, bodyOffset + token.end).replace(/^[\s,;&]+/, "").trim();
+    const matchedRule = findFeeRule(name + " " + evidence);
+    const category = matchedRule?.category ?? listRule.category;
+    const itemLabel = matchedRule?.label ?? (category === "financed_addon" ? "Unclassified item: " + (name || "unnamed") : (name || "Unclassified item"));
+    const position = clause.start + startInClause;
+    items.push({ label: name || "Unclassified item", amount: token.amount, source: evidence || token.token, position, category });
+    findings.push({
+      id: matchedRule?.id ?? groupId + "_item_" + (index + 1),
+      label: itemLabel,
+      category,
+      severity: matchedRule?.severity ?? 1,
+      amount: token.amount,
+      percent: null,
+      basis: null,
+      frequency: "once",
+      conditions: [],
+      source: evidence || token.token,
+      position,
+      explanation: matchedRule?.explanation ?? "This amount appears in a labeled list of financed items.",
+      totalImpact: token.amount,
+      negated: false,
+      amountNotStated: false,
+      groupId,
+    });
+  });
+  return {
+    findings,
+    group: {
+      id: groupId,
+      label,
+      items,
+      aggregate: items.reduce((sum, item) => sum + item.amount, 0),
+      source: clause.text,
+      position: clause.start,
+    },
+  };
+}
+
+/** Configuration-driven clause, fee, tax, offset, and item-list extraction. */
+export function detectCostsGeneric(text: string, principal: number | null, installmentCount: number | null, termMonths: number | null): { findings: CostFinding[]; itemGroups: LineItemGroup[] } {
+  const findings: CostFinding[] = [];
+  const itemGroups: LineItemGroup[] = [];
+  const clauses = segmentClauses(text);
+  const expandedStarts = new Set<number>();
+  for (const clause of clauses) {
+    const expanded = expandConfiguredList(clause);
+    if (!expanded) continue;
+    findings.push(...expanded.findings);
+    itemGroups.push(expanded.group);
+    expandedStarts.add(clause.start);
+  }
+  const seen = new Set<string>();
+  for (const clause of clauses) {
+    if (expandedStarts.has(clause.start)) continue;
+    for (const item of config.feeCatalog) {
+      const match = item.patterns.map((pattern) => new RegExp(pattern, "i").exec(clause.text)).find(Boolean);
+      if (!match || match.index === undefined) continue;
+      const matchPositions = Array.from(new Set(config.feeCatalog.map((candidate) =>
+        candidate.patterns.map((pattern) => new RegExp(pattern, "i").exec(clause.text)?.index)
+          .find((position): position is number => position !== undefined))
+        .filter((position): position is number => position !== undefined)));
+      const hasMultipleFeeLabels = matchPositions.length > 1;
+      const previousLabel = matchPositions.filter((position) => position < match.index!).sort((a, b) => b - a)[0];
+      const nextLabel = matchPositions.filter((position) => position > match.index!).sort((a, b) => a - b)[0];
+      const sourceOffset = hasMultipleFeeLabels && previousLabel !== undefined ? match.index : 0;
+      let source = hasMultipleFeeLabels
+        ? clause.text.slice(sourceOffset, nextLabel ?? clause.text.length).trim()
+        : clause.text;
+      if (hasMultipleFeeLabels && nextLabel !== undefined && previousLabel === undefined) {
+        source = source.replace(/[,;]?\s*(?:(?:and|plus|as well as)\s+)?(?:a|an|the)?\s*$/i, "").trim();
+      }
+      const localMatchStart = match.index - sourceOffset;
+      const findingPosition = clause.start + sourceOffset;
+      const key = item.id + ":" + findingPosition;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const amount = findStructuredAmount(source, localMatchStart + match[0].length) ?? findStructuredAmount(source);
+      const pct = findStructuredPercent(source, localMatchStart + match[0].length) ?? findStructuredPercent(source);
+      const basis = pct === null ? null : config.monetaryBases.find((entry) => new RegExp(entry.pattern, "i").test(source))?.id ?? null;
+      const frequency = /per\s+(?:installment|instalment|payment)/i.test(source) ? "per_installment"
+        : /\/\s*month|per\s+month|monthly/i.test(source) ? "monthly"
+          : /annual|yearly|per\s+year/i.test(source) ? "annual"
+            : /per\s+week|weekly/i.test(source) ? "weekly"
+              : /per\s+day|daily/i.test(source) ? "daily" : "once";
+      const negated = isNegated(source);
+      const conditions = source.match(/\b(?:if|unless|when|provided that|only if)\s+[^.;]+/gi)?.map((value) => value.trim()) ?? [];
+      const composite = /\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:gst|vat|hst|pst|tax|sales\s+tax)\b/i.exec(source);
+      const taxPercent = composite ? Number(composite[1]) : null;
+      const taxAmount = taxPercent !== null && amount ? amount.amount * taxPercent / 100 : null;
+      let totalImpact: number | null = amount?.amount ?? null;
+      if (frequency === "per_installment" && totalImpact !== null && installmentCount) totalImpact *= installmentCount;
+      if (frequency === "monthly" && totalImpact !== null && termMonths) totalImpact *= Math.ceil(termMonths);
+      if (frequency === "annual" && totalImpact !== null && termMonths) {
+        totalImpact *= Math.max(0, Math.ceil(termMonths / 12) - (/\bwaived\s+for\s+(?:the\s+)?first\s+year\b/i.test(source) ? 1 : 0));
+      }
+      if (pct !== null && basis === "principal" && principal !== null) totalImpact = principal * pct / 100;
+      if (pct !== null && basis === "outstanding" && principal !== null) {
+        const atStart = principal * pct / 100;
+        totalImpact = amount ? Math.min(atStart, amount.amount) : atStart;
+      }
+      if (item.category === "tax" && basis === "interest") totalImpact = null;
+      if (item.category === "tax" && amount) totalImpact = amount.amount;
+      if (taxAmount !== null && item.category !== "tax" && item.category !== "offset") totalImpact = (totalImpact ?? amount!.amount) + taxAmount;
+      if (item.category === "offset" && totalImpact !== null) totalImpact = -Math.abs(totalImpact);
+      findings.push({
+        id: item.id,
+        label: item.label,
+        category: item.category,
+        severity: item.severity,
+        amount: amount?.amount ?? null,
+        percent: pct,
+        basis,
+        frequency,
+        qualifier: /\b(up to|at least|at most|minimum|maximum|one[- ]time)\b/i.exec(source)?.[1]?.toLowerCase() ?? null,
+        conditions,
+        source,
+        position: findingPosition,
+        explanation: item.explanation,
+        totalImpact: negated ? 0 : totalImpact,
+        negated,
+        amountNotStated: amount === null && pct === null,
+        taxAmount,
+        taxPercent,
+        taxBasis: taxPercent === null ? null : "fee",
+      });
+    }
+    for (const item of config.unquantifiedTerms) {
+      const match = new RegExp(item.pattern, "i").exec(clause.text);
+      if (!match) continue;
+      const key = item.id + ":" + clause.start;
+      if (seen.has(key)) continue;
+      const stated = findStructuredAmount(clause.text, match.index + match[0].length) ?? findStructuredAmount(clause.text);
+      if (stated) continue;
+      seen.add(key);
+      findings.push({
+        id: item.id,
+        label: item.label,
+        category: item.category,
+        severity: item.severity,
+        amount: null,
+        percent: null,
+        basis: null,
+        frequency: "once",
+        conditions: [],
+        source: clause.text,
+        position: clause.start,
+        explanation: "The document names this amount but does not state a value.",
+        totalImpact: null,
+        negated: false,
+        amountNotStated: true,
+      });
+    }
+  }
+  return { findings, itemGroups };
+}
+
+export function computeTaxImpacts(findings: CostFinding[], totalInterest: number | null, principal: number | null): CostFinding[] {
+  return findings.map((finding) => {
+    if (finding.category !== "tax" || finding.percent === null) return finding;
+    const base = finding.basis === "interest" ? totalInterest
+      : finding.basis === "principal" || finding.basis === "outstanding" ? principal : null;
+    if (base === null) return finding;
+    const amount = base * finding.percent / 100;
+    return { ...finding, amount, totalImpact: amount, amountNotStated: false };
+  });
+}
+
+export function detectClaimsGeneric(text: string, findings: CostFinding[], rate: number | null, netExtraCost: number | null = null): DetectedClaim[] {
+  const output: DetectedClaim[] = [];
+  const seen = new Set<string>();
+  const active = findings.filter((finding) => !finding.negated && finding.category !== "offset");
+  for (const claim of config.claimCatalog) {
+    const pattern = new RegExp(claim.pattern, "gi");
+    for (const match of text.matchAll(pattern)) {
+      if (match.index === undefined) continue;
+      const clause = clauseAt(text, match.index);
+      const key = claim.id + ":" + clause.start;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let contradiction: string | null = null;
+      for (const predicate of claim.predicates ?? []) {
+        if (predicate === "positive_net_cost" && (netExtraCost ?? 0) > 0) {
+          contradiction = "Modeled interest, taxes, and fees exceed offsets by " + netExtraCost.toFixed(2) + ".";
+        } else if (predicate === "listed_charge" && active.some((finding) => (finding.totalImpact ?? 0) > 0 || finding.amountNotStated)) {
+          contradiction = "The document lists a non-waived charge or add-on.";
+        } else if (predicate === "positive_rate" && (rate ?? 0) > 0) {
+          contradiction = "The document also states a positive interest rate.";
+        } else if (predicate === "included_despite_optional" && /\b(?:included|added|financed|rolled\s+into)\b/i.test(clause.text)) {
+          const hedged = /\b(?:may|might|could)\s+be\s+(?:included|added|financed)\b/i.test(clause.text);
+          contradiction = hedged
+            ? "The document says the optional item may be included in the payment."
+            : "The document states that the optional item is included in the payment or financed amount.";
+        } else if (predicate === "conditional_guarantee" && /\b(?:may|might|subject to|depending on)\b/i.test(clause.text)) {
+          contradiction = "The guarantee is qualified by conditional wording in the same clause.";
+        } else if (predicate === "hedge_word_present" && /\b(?:may|might|could)\b/i.test(clause.text)) {
+          contradiction = null;
+        }
+      }
+      output.push({ id: claim.id, label: claim.label, source: clause.text, contradicted: contradiction !== null, contradiction });
+    }
+  }
+  const byClause = new Map<string, DetectedClaim>();
+  for (const claim of output) {
+    const key = claim.source.replace(/\s+/g, " ").trim().toLowerCase();
+    const existing = byClause.get(key);
+    if (!existing) {
+      byClause.set(key, claim);
+      continue;
+    }
+    const labels = Array.from(new Set((existing.label + " / " + claim.label).split(" / ")));
+    const contradictions = Array.from(new Set([existing.contradiction, claim.contradiction].filter((value): value is string => Boolean(value))));
+    byClause.set(key, {
+      ...existing,
+      label: labels.join(" / "),
+      contradicted: contradictions.length > 0,
+      contradiction: contradictions.length ? contradictions.join(" ") : null,
+    });
+  }
+  return Array.from(byClause.values());
+}
+
 export function detectClaims(text: string, findings: CostFinding[], rate: number | null): DetectedClaim[] {
   return config.claimCatalog.flatMap((claim) => {
     const match = new RegExp(claim.pattern, "i").exec(text);
@@ -316,10 +627,12 @@ export function detectGlossary(text: string): Array<{ term: string; definition: 
     .map(({ term, definition }) => ({ term, definition }));
 }
 
-export function calculateRisk(text: string, docType: DocumentType, findings: CostFinding[], claims: DetectedClaim[], confidence: number): { score: number; band: "low" | "medium" | "high" | "insufficient_confidence"; breakdown: RiskBreakdownItem[] } {
+export function calculateRisk(text: string, docType: DocumentType, findings: CostFinding[], claims: DetectedClaim[], confidence: number, rateConfirmed = true): { score: number; band: "low" | "medium" | "high" | "insufficient_confidence"; breakdown: RiskBreakdownItem[] } {
+  void confidence;
   const categoryPoints: Record<string, number> = {};
   const reasons: Record<string, string[]> = {};
   const add = (category: string, points: number, reason: string) => {
+    if (/^\d+\s+fee\/add-on clause/i.test(reason)) reason = "Configured fee and add-on findings";
     categoryPoints[category] = (categoryPoints[category] ?? 0) + points;
     (reasons[category] ??= []).push(reason);
   };
@@ -327,7 +640,7 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
   for (const rule of config.riskRules) {
     if (rule.id === "claim_contradiction") {
       if (claims.some((claim) => claim.contradicted)) add(rule.category, rule.weight, "Document marketing claim conflicts with listed terms");
-    } else if (rule.id === "high_apr") {
+    } else if (rule.id === "high_apr" && rateConfirmed) {
       const apr = text.match(/(?:apr|annual percentage rate)[^\d]{0,20}(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%\s*apr/i);
       if (apr && Number(apr[1] ?? apr[2]) >= 30) add(rule.category, rule.weight, `APR of ${apr[1] ?? apr[2]}%`);
     } else if (rule.id === "advance_fee_scam") {
@@ -344,10 +657,12 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
     }
   }
 
-  const feeRisk = findings.filter((finding) => !finding.negated).reduce((sum, finding) => sum + finding.severity * 3, 0);
+  const activeFindings = findings.filter((finding) => !finding.negated && finding.severity > 0);
+  const feeRisk = activeFindings.reduce((sum, finding) => sum + finding.severity * 3, 0);
   if (feeRisk > 0) add("fees", feeRisk, `${findings.filter((finding) => !finding.negated).length} fee/add-on clause(s)`);
   if (["payday", "rent_to_own"].includes(docType)) add("document_type", 22, `${docType.replace(/_/g, " ")} pricing requires specialist review`);
 
+  if (feeRisk > 0) reasons.fees = activeFindings.map((finding) => finding.label + ": " + finding.source);
   const breakdown = Object.entries(categoryPoints).map(([category, points]) => ({
     category,
     points: Math.min(points, config.riskCategoryCaps[category] ?? 20),
@@ -355,9 +670,7 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
   }));
   const score = Math.min(100, breakdown.reduce((sum, item) => sum + item.points, 0));
   const hasContradiction = claims.some((claim) => claim.contradicted);
-  const band = confidence < 0.75
-    ? "insufficient_confidence"
-    : score >= 60 ? "high" : score >= 30 || hasContradiction ? "medium" : "low";
+  const band = score >= 60 ? "high" : score >= 30 || hasContradiction ? "medium" : "low";
   return { score, band, breakdown };
 }
 
