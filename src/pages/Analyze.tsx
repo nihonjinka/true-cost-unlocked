@@ -1,31 +1,56 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Shield, ArrowLeft, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AnalysisInput } from "@/components/AnalysisInput";
-import { AnalysisDashboard } from "@/components/AnalysisDashboard";
-import { WorstCaseSimulator } from "@/components/WorstCaseSimulator";
-import { AmortizationTable } from "@/components/AmortizationTable";
-import { DeceptionDetector } from "@/components/DeceptionDetector";
-import { SmartAdvice } from "@/components/SmartAdvice";
-import { LoanComparison } from "@/components/LoanComparison";
-import { SavingsCalculator } from "@/components/SavingsCalculator";
+import { AnalysisPanels } from "@/components/AnalysisPanels";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { analyzeLocally } from "@/lib/analyzeLocally";
-import type { AnalysisContext } from "@/lib/analysisContext";
+import { freezeAnalysisContext, type AnalysisContext } from "@/lib/analysisContext";
+import { enhanceAnalysisWithAI, isAIEnhancementConfigured } from "@/lib/analyzeWithAI";
+import type { AIEnhancementStatus } from "@/components/AnalysisPanels";
 import type { SupportedCurrency } from "@/lib/financial";
 
 export default function Analyze() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<AnalysisContext | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [aiEnhancementStatus, setAIEnhancementStatus] = useState<AIEnhancementStatus>("unconfigured");
+  const aiRequestVersion = useRef(0);
+
+  const requestAIEnhancement = (analysis: AnalysisContext) => {
+    const requestVersion = ++aiRequestVersion.current;
+    if (!isAIEnhancementConfigured()) {
+      setAIEnhancementStatus("unconfigured");
+      return;
+    }
+
+    setAIEnhancementStatus("loading");
+    void enhanceAnalysisWithAI(analysis)
+      .then((enhancement) => {
+        if (aiRequestVersion.current !== requestVersion) return;
+        setResult((current) => current?.id === analysis.id
+          ? freezeAnalysisContext({ ...current, ...enhancement }) as AnalysisContext
+          : current);
+        setAIEnhancementStatus("ready");
+      })
+      .catch((error: unknown) => {
+        if (aiRequestVersion.current !== requestVersion) return;
+        console.warn("OpenRouter insights could not be loaded; keeping deterministic analysis:", error);
+        setAIEnhancementStatus("error");
+      });
+  };
 
   const handleAnalyze = (text: string, amount: number | null, rate: number | null, duration: number | null, currency: SupportedCurrency | null) => {
+    aiRequestVersion.current += 1;
+    setAIEnhancementStatus("unconfigured");
     setIsLoading(true);
     setAnalysisError(null);
+    setResult(null);
     try {
       const analysis = analyzeLocally(text, amount, rate, duration, currency);
       setResult(analysis);
+      requestAIEnhancement(analysis);
     } catch (error) {
       console.error("Analysis failed:", error);
       setAnalysisError(error instanceof Error ? error.message : "The document could not be analyzed.");
@@ -40,6 +65,7 @@ export default function Analyze() {
     const durationOverride = result.termField.source === "User override" ? result.termField.value : null;
     const next = analyzeLocally(result.rawText, amount, rateOverride, durationOverride, result.currency);
     setResult(next);
+    requestAIEnhancement(next);
   };
 
   return (
@@ -68,21 +94,7 @@ export default function Analyze() {
             <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" /><p className="font-mono text-xs text-destructive">{analysisError}</p>
           </motion.div>}
           {result && !isLoading && (
-            <>
-              <AnalysisDashboard context={result} onPrincipalSelect={selectPrincipal} />
-              <DeceptionDetector context={result} />
-              <SmartAdvice context={result} />
-              {result.financialMetricsAvailable && (
-                <>
-                  <AmortizationTable key={result.rawText + String(result.principal)} context={result} />
-                  {result.rateField.rateType === "reducing" && <>
-                    <WorstCaseSimulator key={result.rawText + String(result.principal)} context={result} />
-                    <SavingsCalculator key={result.rawText + String(result.principal)} context={result} />
-                    <LoanComparison key={result.rawText + String(result.principal)} context={result} />
-                  </>}
-                </>
-              )}
-            </>
+            <AnalysisPanels key={result.id} context={result} onPrincipalSelect={selectPrincipal} aiEnhancementStatus={aiEnhancementStatus} />
           )}
         </div>
       </div>

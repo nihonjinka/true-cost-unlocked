@@ -1,11 +1,23 @@
 import rules from "@/data/analysisRules.json";
-import { calculateEMI, normalizeDuration, parseAmount, type ParsedDuration } from "./financial";
-import type { CostFinding, DetectedClaim, DocumentType, ExtractedCandidate, ExtractedField, LineItemGroup, RiskBreakdownItem } from "./analysisContext";
+import { calculateEMI, normalizeDuration, parseAmount, parseTimeUnit, toAnnualRate, type ParsedDuration, type TimeUnit } from "./financial";
+import type { AmountRelationship, CostFinding, DetectedClaim, DocumentType, ExtractedCandidate, ExtractedField, LineItemGroup, RiskBreakdownItem } from "./analysisContext";
 
 type LabelRule = { id: string; pattern: string; score: number; kind: "principal" | "price" | "exclude" };
 type DocumentRule = { id: DocumentType; label: string; signals: Array<{ pattern: string; weight: number }> };
-type FeeRule = { id: string; label: string; patterns: string[]; category: string; severity: number; explanation: string };
+type FeeRule = { id: string; label: string; patterns: string[]; category: string; severity: number; explanation: string; suppressWhen?: string[] };
 type Clause = { text: string; start: number; end: number };
+export type RateRole = "base" | "promotional" | "penalty" | "tax" | "fee_percent" | "discount";
+export interface ParsedRateCandidate {
+  value: number;
+  statedValue: number;
+  period: TimeUnit;
+  basis: "flat" | "reducing" | "unspecified";
+  role: RateRole;
+  start: number;
+  end: number;
+  source: string;
+  assumption: string | null;
+}
 export interface ParsedMonetaryValue {
   amount: number | null;
   percent: number | null;
@@ -19,14 +31,21 @@ export interface ParsedMonetaryValue {
 const config = rules as {
   segmentation: { abbreviations: string[] };
   monetaryBases: Array<{ id: string; pattern: string }>;
+  rateRoleRules?: Array<{ role: RateRole; pattern: string }>;
+  quantityRelationships?: {
+    percentOfPattern: string;
+    references: Array<{ id: string; pattern: string; candidatePattern: string }>;
+  };
+  inherentRiskProfiles?: Array<{ documentType: DocumentType; weight: number; reason: string }>;
   listCategories: Array<{ id: string; labelPattern: string; category: string }>;
   unquantifiedTerms: Array<{ id: string; label: string; pattern: string; category: string; severity: number }>;
   principalLabels: LabelRule[];
   documentTypes: DocumentRule[];
-  feeCatalog: FeeRule[];
+  feeCatalog: Array<FeeRule & { minimumRiskBand?: "medium" | "high"; riskReason?: string }>;
   claimCatalog: Array<{ id: string; label: string; pattern: string; predicates?: string[] }>;
   riskRules: Array<{ id: string; category: string; weight: number; pattern: string }>;
   riskCategoryCaps: Record<string, number>;
+  riskBandThresholds?: { medium: number; high: number; confidence: number };
   glossary: Array<{ id: string; term: string; pattern: string; definition: string }>;
 };
 
@@ -47,6 +66,7 @@ function isCompleteMoneyMatch(text: string, match: RegExpMatchArray): boolean {
     || (after === "." && /\d/.test(text[end + 1] ?? ""))) return false;
   if (/^\s*%/.test(text.slice(end, end + 4))) return false;
   if (!match.groups.currency && /^\s*(?:years?|yrs?|months?|mos?|weeks?|days?|fortnights?)\b/i.test(text.slice(end, end + 20))) return false;
+  if (!match.groups.currency && /^\s*(?:missed\s+)?(?:payments?|installments?|instalments?|emis?)\b/i.test(text.slice(end, end + 28))) return false;
   return true;
 }
 
@@ -149,6 +169,101 @@ export function parseMonetaryValues(text: string, baseOffset = 0): ParsedMonetar
     values.push({ amount: null, percent: Number(match.groups?.percent), basis, frequency, qualifier, currency: null, span: [baseOffset + match.index, baseOffset + match.index + match[0].length] });
   }
   return values.sort((a, b) => a.span[0] - b.span[0]);
+}
+
+/** Extract rates by semantic role; only base and promotional rates can price the standard schedule. */
+export function extractRateCandidates(text: string): ParsedRateCandidate[] {
+  const clauses = segmentClauses(text);
+  const matches = Array.from(text.matchAll(/(?<value>\d+(?:\.\d+)?)\s*%(?!\s*(?:gst|vat|hst|pst|tax)\b)/gi));
+  const candidates: ParsedRateCandidate[] = [];
+  const roleRules = config.rateRoleRules ?? [];
+  for (const match of matches) {
+    if (match.index === undefined || !match.groups?.value) continue;
+    const start = match.index;
+    const end = start + match[0].length;
+    const clauseIndex = clauses.findIndex((clause) => clause.start <= start && start < clause.end);
+    const clause = clauses[clauseIndex] ?? { text: text.slice(start), start, end: text.length };
+    const neighboring = [clauses[clauseIndex - 1], clause, clauses[clauseIndex + 1]]
+      .filter((item): item is Clause => Boolean(item) && (item!.start === clause.start || Math.abs(item!.start - clause.start) <= 2 || Math.abs(item!.end - clause.end) <= 2));
+    const context = neighboring.map((item) => item.text).join(" ");
+    const roleRule = roleRules.find((rule) => new RegExp(rule.pattern, "i").test(context));
+    if (!roleRule) continue;
+
+    const statedValue = Number(match.groups.value);
+    if (!Number.isFinite(statedValue) || statedValue < 0) continue;
+    const after = text.slice(end, Math.min(text.length, end + 45));
+    const before = text.slice(Math.max(0, start - 45), start);
+    const periodMatch = /(?:per|each|\/)\s*(day|week|fortnight|month|year)s?\b|\b(daily|weekly|fortnightly|monthly|annually|yearly)\b|\bp\.?a\.?\b/i.exec(after)
+      ?? /\b(daily|weekly|fortnightly|monthly|annually|yearly)\s+(?:rate|interest)\b/i.exec(before);
+    const periodLabel = periodMatch?.[1] ?? periodMatch?.[2] ?? "year";
+    const period = parseTimeUnit(periodLabel) ?? "year";
+    const basis: ParsedRateCandidate["basis"] = /\bflat\b|add[- ]on\s+(?:rate|interest)|on\s+(?:the\s+)?original\s+principal/i.test(context)
+      ? "flat"
+      : /\breducing\b|declining\s+(?:balance|principal)|on\s+(?:the\s+)?(?:daily\s+)?balance/i.test(context)
+        ? "reducing" : "unspecified";
+    const annualRate = toAnnualRate(statedValue, period);
+    if (annualRate === null) continue;
+    const assumption = period !== "year" && basis === "unspecified"
+      ? `The ${period}-period rate is annualized nominally; flat versus reducing basis is not stated.`
+      : basis === "unspecified"
+        ? "Rate basis is not stated; reducing-balance calculation is assumed where a loan calculator requires a basis."
+        : null;
+    candidates.push({
+      value: annualRate,
+      statedValue,
+      period,
+      basis,
+      role: roleRule.role,
+      start,
+      end,
+      source: clause.text,
+      assumption,
+    });
+  }
+  return candidates;
+}
+
+export function resolveDerivedAmountCandidates(text: string, candidates: ExtractedCandidate[]): {
+  candidates: ExtractedCandidate[];
+  relationships: AmountRelationship[];
+} {
+  const relationConfig = config.quantityRelationships;
+  if (!relationConfig) return { candidates, relationships: [] };
+  const removed = new Set<number>();
+  const relationships: AmountRelationship[] = [];
+  const labelRules = relationConfig.references;
+  for (const clause of segmentClauses(text)) {
+    const relationPattern = new RegExp(relationConfig.percentOfPattern, "gi");
+    for (const relation of clause.text.matchAll(relationPattern)) {
+      if (relation.index === undefined || !relation.groups?.percent || !relation.groups?.baseLabel) continue;
+      const percent = Number(relation.groups.percent);
+      const baseLabel = relation.groups.baseLabel;
+      const referenceRule = labelRules.find((rule) => new RegExp(rule.pattern, "i").test(baseLabel));
+      if (!referenceRule) continue;
+      const derivedText = relation.groups.derived;
+      const derivedTextOffset = relation[0].indexOf(derivedText);
+      if (derivedTextOffset < 0) continue;
+      const derivedToken = parseMonetaryValues(derivedText, clause.start + relation.index + derivedTextOffset)
+        .find((value) => value.amount !== null);
+      if (!derivedToken || derivedToken.amount === null) continue;
+      const derivedCandidate = candidates.find((candidate) => candidate.position >= derivedToken.span[0] && candidate.position < derivedToken.span[1]);
+      if (derivedCandidate) removed.add(derivedCandidate.position);
+      const baseCandidate = candidates.filter((candidate) => candidate.position < clause.start || candidate.position >= clause.end)
+        .filter((candidate) => new RegExp(referenceRule.candidatePattern, "i").test(candidate.label))
+        .sort((a, b) => Math.abs(clause.start - a.position) - Math.abs(clause.start - b.position))[0];
+      const expectedAmount = baseCandidate ? baseCandidate.value * percent / 100 : null;
+      const confirmed = expectedAmount !== null && Math.abs(expectedAmount - derivedToken.amount) <= Math.max(1, expectedAmount * 0.005);
+      relationships.push({
+        type: "percent_of",
+        source: clause.text,
+        derivedAmount: derivedToken.amount,
+        baseLabel,
+        expectedAmount,
+        confirmed,
+      });
+    }
+  }
+  return { candidates: candidates.filter((candidate) => !removed.has(candidate.position)), relationships };
 }
 
 function clauseAt(text: string, position: number): Clause {
@@ -264,7 +379,8 @@ export function extractStatedEMI(text: string, candidates = extractAmountCandida
 
 function isNegated(clause: string): boolean {
   if (/\bwaived\s+for\s+(?:the\s+)?first\s+(?:year|month)\b/i.test(clause)) return false;
-  return /\b(?:no|none|not\s+(?:charged|applicable|apply|subject\s+to|assessed)|waived|free of|without)\b/i.test(clause)
+  return /\b(?:no|none|not\s+(?:charged|applicable|apply|subject\s+to|assessed)|waived|free of)\b/i.test(clause)
+    || /\bwithout\s+(?:any\s+)?(?:fee|fees|charge|charges|interest|tax|cost|penalty)\b/i.test(clause)
     || /(?:\$|₹|€|£|Rs\.?\s*)\s*0(?:\.0+)?\b/i.test(clause)
     || /\b0(?:\.0+)?\s*%\b/i.test(clause);
 }
@@ -308,7 +424,7 @@ export function detectCosts(text: string, principal: number | null, installmentC
         const basis = parsed.percent !== null
           ? /emi/i.test(source) ? "emi" : /balance/i.test(source) ? "balance" : /principal|amount financed/i.test(source) ? "principal" : null
           : null;
-        const conditions = source.match(/\b(?:if|unless|when|provided that|only if)\s+[^.;]+/gi)?.map((value) => value.trim()) ?? [];
+        const conditions = source.match(/\b(?:if|unless|when|provided that|only if|after|upon|following)\s+[^.;]+/gi)?.map((value) => value.trim()) ?? [];
         let totalImpact: number | null = parsed.amount;
         if (totalImpact !== null && frequency === "per_installment" && installmentCount) totalImpact *= installmentCount;
         if (totalImpact !== null && frequency === "monthly" && termMonths) totalImpact *= Math.ceil(termMonths);
@@ -440,6 +556,7 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
   for (const clause of clauses) {
     if (expandedStarts.has(clause.start)) continue;
     for (const item of config.feeCatalog) {
+      if (item.suppressWhen?.some((pattern) => new RegExp(pattern, "i").test(clause.text))) continue;
       const match = item.patterns.map((pattern) => new RegExp(pattern, "i").exec(clause.text)).find(Boolean);
       if (!match || match.index === undefined) continue;
       const matchPositions = Array.from(new Set(config.feeCatalog.map((candidate) =>
@@ -465,12 +582,13 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
       const pct = findStructuredPercent(source, localMatchStart + match[0].length) ?? findStructuredPercent(source);
       const basis = pct === null ? null : config.monetaryBases.find((entry) => new RegExp(entry.pattern, "i").test(source))?.id ?? null;
       const frequency = /per\s+(?:installment|instalment|payment)/i.test(source) ? "per_installment"
-        : /\/\s*month|per\s+month|monthly/i.test(source) ? "monthly"
+        : /\/\s*fortnight|per\s+fortnight|fortnightly|biweekly/i.test(source) ? "fortnightly"
+          : /\/\s*month|per\s+month|monthly/i.test(source) ? "monthly"
           : /annual|yearly|per\s+year/i.test(source) ? "annual"
             : /per\s+week|weekly/i.test(source) ? "weekly"
               : /per\s+day|daily/i.test(source) ? "daily" : "once";
-      const negated = isNegated(source);
-      const conditions = source.match(/\b(?:if|unless|when|provided that|only if)\s+[^.;]+/gi)?.map((value) => value.trim()) ?? [];
+      const negated = item.id === "no_credit_check" ? false : isNegated(source);
+      const conditions = source.match(/\b(?:if|unless|when|provided that|only if|after|upon|following)\s+[^.;]+/gi)?.map((value) => value.trim()) ?? [];
       const composite = /\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:gst|vat|hst|pst|tax|sales\s+tax)\b/i.exec(source);
       const taxPercent = composite ? Number(composite[1]) : null;
       const taxAmount = taxPercent !== null && amount ? amount.amount * taxPercent / 100 : null;
@@ -565,6 +683,7 @@ export function detectClaimsGeneric(text: string, findings: CostFinding[], rate:
       if (seen.has(key)) continue;
       seen.add(key);
       let contradiction: string | null = null;
+      let signal: string | null = null;
       for (const predicate of claim.predicates ?? []) {
         if (predicate === "positive_net_cost" && (netExtraCost ?? 0) > 0) {
           contradiction = "Modeled interest, taxes, and fees exceed offsets by " + netExtraCost.toFixed(2) + ".";
@@ -581,9 +700,14 @@ export function detectClaimsGeneric(text: string, findings: CostFinding[], rate:
           contradiction = "The guarantee is qualified by conditional wording in the same clause.";
         } else if (predicate === "hedge_word_present" && /\b(?:may|might|could)\b/i.test(clause.text)) {
           contradiction = null;
+        } else if (predicate === "ownership_after_all_payments"
+          && findings.some((finding) => finding.id === "ownership_after_final_payment" && !finding.negated)) {
+          contradiction = "The terms say ownership transfers only after the final payment.";
+        } else if (predicate === "predatory_pricing_signal") {
+          signal = "No-credit-check marketing is a predatory-pricing signal; verify total payable, fees, and ownership conditions.";
         }
       }
-      output.push({ id: claim.id, label: claim.label, source: clause.text, contradicted: contradiction !== null, contradiction });
+      output.push({ id: claim.id, label: claim.label, source: clause.text, contradicted: contradiction !== null, contradiction, signal });
     }
   }
   const byClause = new Map<string, DetectedClaim>();
@@ -601,6 +725,7 @@ export function detectClaimsGeneric(text: string, findings: CostFinding[], rate:
       label: labels.join(" / "),
       contradicted: contradictions.length > 0,
       contradiction: contradictions.length ? contradictions.join(" ") : null,
+      signal: [existing.signal, claim.signal].filter((value): value is string => Boolean(value)).join(" ") || null,
     });
   }
   return Array.from(byClause.values());
@@ -627,8 +752,8 @@ export function detectGlossary(text: string): Array<{ term: string; definition: 
     .map(({ term, definition }) => ({ term, definition }));
 }
 
-export function calculateRisk(text: string, docType: DocumentType, findings: CostFinding[], claims: DetectedClaim[], confidence: number, rateConfirmed = true): { score: number; band: "low" | "medium" | "high" | "insufficient_confidence"; breakdown: RiskBreakdownItem[] } {
-  void confidence;
+export function calculateRisk(text: string, docType: DocumentType, findings: CostFinding[], claims: DetectedClaim[], confidence: number, rateConfirmed = true, incompleteAnalysis = false): { score: number; band: "low" | "medium" | "high" | "incomplete_analysis"; breakdown: RiskBreakdownItem[] } {
+  const thresholds = config.riskBandThresholds ?? { medium: 30, high: 60, confidence: 0.7 };
   const categoryPoints: Record<string, number> = {};
   const reasons: Record<string, string[]> = {};
   const add = (category: string, points: number, reason: string) => {
@@ -641,8 +766,8 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
     if (rule.id === "claim_contradiction") {
       if (claims.some((claim) => claim.contradicted)) add(rule.category, rule.weight, "Document marketing claim conflicts with listed terms");
     } else if (rule.id === "high_apr" && rateConfirmed) {
-      const apr = text.match(/(?:apr|annual percentage rate)[^\d]{0,20}(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%\s*apr/i);
-      if (apr && Number(apr[1] ?? apr[2]) >= 30) add(rule.category, rule.weight, `APR of ${apr[1] ?? apr[2]}%`);
+      const apr = extractRateCandidates(text).find((candidate) => ["base", "promotional"].includes(candidate.role) && candidate.value >= 30);
+      if (apr) add(rule.category, rule.weight, "Confirmed " + apr.role + " rate of " + apr.value + "% annualized");
     } else if (rule.id === "advance_fee_scam") {
       if (docType === "advance_fee_scam") add(rule.category, rule.weight, "Advance-fee scam signals detected");
     } else if (rule.pattern) {
@@ -650,7 +775,7 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
       for (const match of text.matchAll(pattern)) {
         if (match.index === undefined) continue;
         const clause = findClause(text, match.index, match.index + match[0].length).source;
-        if (isNegated(clause)) continue;
+        if (isNegated(clause) && rule.id !== "no_credit_access_signal") continue;
         add(rule.category, rule.weight, rule.id.replace(/_/g, " "));
         break;
       }
@@ -659,18 +784,33 @@ export function calculateRisk(text: string, docType: DocumentType, findings: Cos
 
   const activeFindings = findings.filter((finding) => !finding.negated && finding.severity > 0);
   const feeRisk = activeFindings.reduce((sum, finding) => sum + finding.severity * 3, 0);
-  if (feeRisk > 0) add("fees", feeRisk, `${findings.filter((finding) => !finding.negated).length} fee/add-on clause(s)`);
-  if (["payday", "rent_to_own"].includes(docType)) add("document_type", 22, `${docType.replace(/_/g, " ")} pricing requires specialist review`);
-
-  if (feeRisk > 0) reasons.fees = activeFindings.map((finding) => finding.label + ": " + finding.source);
+  if (feeRisk > 0) {
+    add("fees", feeRisk, "Configured findings: " + activeFindings.map((finding) => finding.label).join(", "));
+    reasons.fees = activeFindings.map((finding) => finding.label + ": " + finding.source.replace(/[.!?;]+\s*$/, ""));
+  }
+  const profile = config.inherentRiskProfiles?.find((item) => item.documentType === docType);
+  if (profile) add("document_profile", profile.weight, profile.reason);
+  const floors = activeFindings.flatMap((finding) => {
+    const entry = config.feeCatalog.find((candidate) => candidate.id === finding.id);
+    return entry?.minimumRiskBand ? [{ band: entry.minimumRiskBand, reason: entry.riskReason ?? finding.label + " was detected." }] : [];
+  });
+  const scoreBeforeFloor = Math.min(100, Object.entries(categoryPoints).reduce((sum, [category, points]) => sum + Math.min(points, config.riskCategoryCaps[category] ?? 20), 0));
+  const floorBand = floors.some((floor) => floor.band === "high") ? "high" : floors.some((floor) => floor.band === "medium") ? "medium" : null;
+  const floorScore = floorBand === "high" ? thresholds.high : floorBand === "medium" ? thresholds.medium : 0;
+  if (floorBand) {
+    const floorReason = Array.from(new Set(floors.filter((floor) => floor.band === floorBand).map((floor) => floor.reason))).join(" ");
+    add("severity_floor", Math.max(0, floorScore - scoreBeforeFloor), floorReason);
+  }
   const breakdown = Object.entries(categoryPoints).map(([category, points]) => ({
     category,
-    points: Math.min(points, config.riskCategoryCaps[category] ?? 20),
+    points: category === "severity_floor" ? points : Math.min(points, config.riskCategoryCaps[category] ?? 20),
     reasons: reasons[category] ?? [],
   }));
   const score = Math.min(100, breakdown.reduce((sum, item) => sum + item.points, 0));
   const hasContradiction = claims.some((claim) => claim.contradicted);
-  const band = score >= 60 ? "high" : score >= 30 || hasContradiction ? "medium" : "low";
+  const band = incompleteAnalysis || confidence < thresholds.confidence ? "incomplete_analysis"
+    : floorBand === "high" || score >= thresholds.high ? "high"
+      : floorBand === "medium" || score >= thresholds.medium || hasContradiction ? "medium" : "low";
   return { score, band, breakdown };
 }
 

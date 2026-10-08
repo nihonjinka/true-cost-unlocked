@@ -13,10 +13,39 @@ export interface InstallmentSchedule {
   count: number;
   amount: number;
   interval: number;
-  intervalUnit: "day" | "week" | "month";
+  intervalUnit: "day" | "week" | "fortnight" | "month" | "year";
   total: number;
   totalWithKnownFees: number | null;
   source: string;
+  firstPaymentTiming: "one period after agreement";
+}
+
+export interface CashPriceAnalysis {
+  cashPrice: number;
+  totalPaid: number;
+  multiple: number;
+  extraCost: number;
+  impliedNominalAPR: number | null;
+  periodsPerYear: number;
+  firstPaymentTiming: "one period after agreement";
+}
+
+export interface CostBreakdown {
+  interest: number;
+  taxes: number;
+  fees: number;
+  optionalProducts: number;
+  offsets: number;
+  financingCost: number;
+}
+
+export interface AmountRelationship {
+  type: "percent_of" | "sum_of" | "difference_of" | "product_of_schedule";
+  source: string;
+  derivedAmount: number;
+  baseLabel: string;
+  expectedAmount: number | null;
+  confirmed: boolean;
 }
 
 export type DocumentType =
@@ -91,6 +120,7 @@ export interface CalculatorStatus {
   label: string;
   available: boolean;
   missingInputs: string[];
+  unsupportedReason?: string | null;
 }
 
 export interface AddOnImpact {
@@ -106,6 +136,7 @@ export interface DetectedClaim {
   source: string;
   contradicted: boolean;
   contradiction: string | null;
+  signal?: string | null;
 }
 
 export interface RiskBreakdownItem {
@@ -115,12 +146,17 @@ export interface RiskBreakdownItem {
 }
 
 export interface AnalysisContext {
+  readonly id: string;
   readonly docType: { type: DocumentType; label: string; confidence: number; signals: string[] };
   readonly region: string | null;
   readonly currency: SupportedCurrency | null;
   readonly currencyCode: SupportedCurrency;
   readonly principalField: ExtractedField<number>;
-  readonly rateField: ExtractedField<number> & { rateType: "reducing" | "flat" | "deferred" | "revolving" | "unknown" };
+  readonly rateField: ExtractedField<number> & {
+    rateType: "reducing" | "flat" | "deferred" | "revolving" | "unknown";
+    rateRole: "base" | "promotional" | "penalty" | "implied" | "unknown";
+    basisAssumption: string | null;
+  };
   readonly termField: ExtractedField<number>;
   readonly statedEMI: ExtractedField<number>;
   readonly installmentSchedule: InstallmentSchedule | null;
@@ -130,8 +166,12 @@ export interface AnalysisContext {
   readonly taxes: CostFinding[];
   readonly offsets: CostFinding[];
   readonly itemGroups: LineItemGroup[];
+  readonly amountRelationships: AmountRelationship[];
   readonly reconciliations: ReconciliationCheck[];
   readonly calculator: CalculatorStatus;
+  readonly ranCalculators: string[];
+  readonly cashPriceAnalysis: CashPriceAnalysis | null;
+  readonly costBreakdown: CostBreakdown;
   readonly confidenceIssues: string[];
   readonly addOnImpact: AddOnImpact | null;
   readonly netExtraCost: number | null;
@@ -140,12 +180,15 @@ export interface AnalysisContext {
   readonly confidence: number;
   readonly warnings: string[];
   readonly riskScore: number;
-  readonly riskBand: "low" | "medium" | "high" | "insufficient_confidence";
+  readonly riskBand: "low" | "medium" | "high" | "incomplete_analysis";
   readonly riskBreakdown: RiskBreakdownItem[];
   readonly summary: string;
   readonly hiddenFees: string[];
   readonly insights: string[];
   readonly aiInsights?: string[];
+  readonly aiNegotiationStrategies?: string[];
+  readonly aiClausesToReview?: string[];
+  readonly aiCounterOfferEmail?: string;
   readonly emi: number | null;
   readonly totalPayment: number | null;
   readonly totalInterest: number | null;

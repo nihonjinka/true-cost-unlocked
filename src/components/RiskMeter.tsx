@@ -2,19 +2,19 @@ import { motion } from "framer-motion";
 
 interface Props {
   score: number;
-  band?: "low" | "medium" | "high" | "insufficient_confidence";
+  band?: "low" | "medium" | "high" | "incomplete_analysis";
 }
 
 export function RiskMeter({ score, band }: Props) {
   const getColor = () => {
-    if (band === "insufficient_confidence") return "hsl(var(--muted-foreground))";
+    if (band === "incomplete_analysis") return "hsl(var(--muted-foreground))";
     if (score < 30) return "hsl(68, 100%, 45%)";
     if (score < 60) return "hsl(45, 93%, 50%)";
     return "hsl(0, 72%, 55%)";
   };
 
   const getLabel = () => {
-    if (band === "insufficient_confidence") return "INSUFFICIENT CONFIDENCE";
+    if (band === "incomplete_analysis") return "INCOMPLETE ANALYSIS";
     if (score < 30) return "LOW RISK";
     if (score < 60) return "MEDIUM RISK";
     return "HIGH RISK";
@@ -55,9 +55,10 @@ export function RiskMeter({ score, band }: Props) {
           className="text-2xl font-mono font-bold"
           style={{ color: getColor() }}
         >
-          {score}/100
+          {band === "incomplete_analysis" ? "≥" : ""}{score}/100
         </motion.span>
         <p className="font-mono text-[10px] tracking-widest text-muted-foreground mt-1">{getLabel()}</p>
+        {band === "incomplete_analysis" && <p className="font-mono text-[10px] text-muted-foreground">At least {score} points from detected findings</p>}
       </div>
     </div>
   );

@@ -11,9 +11,10 @@ export type AnalysisResult = AnalysisContext;
 interface Props {
   context: AnalysisContext;
   onPrincipalSelect?: (amount: number) => void;
+  aiEnhancementStatus?: "unconfigured" | "loading" | "ready" | "error";
 }
 
-export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
+export function AnalysisDashboard({ context, onPrincipalSelect, aiEnhancementStatus = "unconfigured" }: Props) {
   const currencySymbol = getCurrencySymbol(context.currencyCode);
   const currencyLocale = getCurrencyLocale(context.currencyCode);
   const hasMetrics = context.financialMetricsAvailable && context.emi !== null && context.totalPayment !== null && context.totalInterest !== null && context.totalCost !== null;
@@ -69,10 +70,39 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
         </TerminalCard>
       )}
 
+      {context.cashPriceAnalysis && (
+        <TerminalCard title="CASH PRICE VS TOTAL" icon={TrendingUp} delay={0.24}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-sm">
+            <p>Total paid: <strong>{formatCurrency(context.cashPriceAnalysis.totalPaid, context.currencyCode)}</strong></p>
+            <p>Cash-price multiple: <strong>{context.cashPriceAnalysis.multiple.toFixed(2)}×</strong></p>
+            <p>Extra cost: <strong>{formatCurrency(context.cashPriceAnalysis.extraCost, context.currencyCode)}</strong></p>
+            <p className="sm:col-span-3">
+              Implied nominal APR: <strong>{context.cashPriceAnalysis.impliedNominalAPR === null ? "not solvable" : context.cashPriceAnalysis.impliedNominalAPR.toFixed(1) + "%"}</strong>
+              {" · "}IRR assumes the first payment is one payment period after agreement.
+            </p>
+          </div>
+        </TerminalCard>
+      )}
+
+      {(context.netExtraCost !== null || context.costBreakdown.optionalProducts > 0) && (
+        <TerminalCard title="FINANCING COST BREAKDOWN" icon={TrendingUp} delay={0.26}>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-xs">
+            <p>Interest: {formatCurrency(context.costBreakdown.interest, context.currencyCode)}</p>
+            <p>Taxes: {formatCurrency(context.costBreakdown.taxes, context.currencyCode)}</p>
+            <p>Fees: {formatCurrency(context.costBreakdown.fees, context.currencyCode)}</p>
+            <p>Offsets: −{formatCurrency(context.costBreakdown.offsets, context.currencyCode)}</p>
+            <p className="font-bold">Financing cost: {formatCurrency(context.costBreakdown.financingCost, context.currencyCode)}</p>
+            <p>Optional products: {formatCurrency(context.costBreakdown.optionalProducts, context.currencyCode)} · shown separately</p>
+          </div>
+        </TerminalCard>
+      )}
+
       {!context.calculator.available && (
         <TerminalCard title="PARTIAL CALCULATION" icon={AlertTriangle} delay={0.3}>
           <p className="font-mono text-sm text-muted-foreground">
-            {context.calculator.label} needs: {context.calculator.missingInputs.join(", ")}.
+            {context.calculator.unsupportedReason
+              ? context.calculator.unsupportedReason
+              : context.calculator.label + " needs: " + context.calculator.missingInputs.join(", ") + "."}
           </p>
           <p className="font-mono text-[10px] text-muted-foreground mt-2">
             Findings still contribute to the risk score. Calculation-dependent results appear when their inputs are available.
@@ -143,6 +173,7 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
               {context.riskBreakdown.map((item) => (
                 <li key={item.category} className="font-mono text-[10px] text-muted-foreground">
                   {item.category.replace(/_/g, " ")}: {item.points} points
+                  {item.reasons.length > 0 && <ul className="mt-1 list-disc pl-4">{item.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
                 </li>
               ))}
             </ul>
@@ -212,14 +243,50 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
         </TerminalCard>
       )}
 
-      {!!context.aiInsights?.length && (
-        <TerminalCard title="OPTIONAL AI INSIGHTS" icon={Brain} delay={0.72}>
+      {(!!context.aiInsights?.length || aiEnhancementStatus !== "ready") && (
+        <TerminalCard title="AI INSIGHTS" icon={Brain} delay={0.72}>
+          {aiEnhancementStatus === "loading" && (
+            <p className="font-mono text-sm text-muted-foreground">Generating supplemental insights from the agreement…</p>
+          )}
+          {aiEnhancementStatus === "unconfigured" && !context.aiInsights?.length && (
+            <p className="font-mono text-xs text-muted-foreground">OpenRouter is not configured for this build. Rule-based analysis is available.</p>
+          )}
+          {aiEnhancementStatus === "error" && !context.aiInsights?.length && (
+            <p className="font-mono text-xs text-muted-foreground">AI insights could not be loaded. The rule-based analysis is still available.</p>
+          )}
+          {aiEnhancementStatus === "ready" && !context.aiInsights?.length && (
+            <p className="font-mono text-xs text-muted-foreground">No additional AI observations were returned for this agreement.</p>
+          )}
           <ul className="space-y-3">
-            {context.aiInsights.map((insight, i) => (
+            {(context.aiInsights ?? []).map((insight, i) => (
               <motion.li key={i} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: 0.72 + i * 0.08 }} className="flex items-start gap-3 font-mono text-sm">
                 <span className="text-primary mt-0.5">▸</span><span className="text-foreground">{insight}</span>
               </motion.li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {!!context.aiNegotiationStrategies?.length && (
+        <TerminalCard title="AI NEGOTIATION PLAYBOOK" icon={Brain} delay={0.74}>
+          <ul className="space-y-2">
+            {context.aiNegotiationStrategies.map((strategy, i) => (
+              <li key={i} className="flex items-start gap-3 font-mono text-sm">
+                <span className="text-primary mt-0.5">▸</span><span className="text-foreground">{strategy}</span>
+              </li>
+            ))}
+          </ul>
+        </TerminalCard>
+      )}
+
+      {!!context.aiClausesToReview?.length && (
+        <TerminalCard title="AI CLAUSES TO REVIEW" icon={FileWarning} delay={0.76} className="border-yellow-500/30">
+          <ul className="space-y-2">
+            {context.aiClausesToReview.map((clause, i) => (
+              <li key={i} className="flex items-start gap-3 font-mono text-sm">
+                <span className="text-yellow-500 mt-0.5">▸</span><span className="text-foreground">{clause}</span>
+              </li>
             ))}
           </ul>
         </TerminalCard>
