@@ -1,30 +1,9 @@
-import { calculateEMI, formatCurrency, type SupportedCurrency } from "./financial";
-import type { AnalysisResult } from "@/components/AnalysisDashboard";
-import type { DeceptionResult } from "@/components/DeceptionDetector";
-import type { AdviceResult } from "@/components/SmartAdvice";
-
-const UNIT_MULTIPLIERS: Record<string, number> = {
-  k: 1_000,
-  thousand: 1_000,
-  lakh: 100_000,
-  lac: 100_000,
-  crore: 10_000_000,
-  million: 1_000_000,
-  billion: 1_000_000_000,
-};
+import { analyzeLoan, calculateEMI, calculateFlatLoan, detectCurrency, formatCurrency, normalizeDuration, parseTimeUnit, toAnnualRate, type SupportedCurrency } from "./financial";
+import { calculateRisk, classifyDocument, detectClaims, detectCosts, extractAmountCandidates, extractStatedEMI, scorePrincipalCandidates } from "./analysisEngine";
+import { freezeAnalysisContext, type AdviceResult, type AlternativeFunding, type AnalysisContext, type DeceptionResult, type ExtractedField, type FairMarketBenchmark, type GlossaryItem, type InstallmentSchedule } from "./analysisContext";
+import rules from "@/data/analysisRules.json";
 
 const CURRENCY_AMOUNT_SOURCE = String.raw`(?:\$|₹|€|£|¥|US\$|C\$|A\$|S\$|usd|inr|eur|gbp|jpy|cad|aud|sgd|aed|rs\.?)`;
-const CURRENCY_DETECTION_RULES: Array<{ code: SupportedCurrency; source: string }> = [
-  { code: "INR", source: String.raw`(?:₹|\bINR\b|\bRs\.?(?=\s|\d|$))` },
-  { code: "EUR", source: String.raw`(?:€|\bEUR\b)` },
-  { code: "GBP", source: String.raw`(?:£|\bGBP\b)` },
-  { code: "JPY", source: String.raw`(?:¥|\bJPY\b)` },
-  { code: "CAD", source: String.raw`(?:C\$|\bCAD\b)` },
-  { code: "AUD", source: String.raw`(?:A\$|\bAUD\b)` },
-  { code: "SGD", source: String.raw`(?:S\$|\bSGD\b)` },
-  { code: "AED", source: String.raw`(?:\bAED\b)` },
-  { code: "USD", source: String.raw`(?:US\$|\$|\bUSD\b)` },
-];
 const PRICE_COMPARISON_PATTERN = new RegExp(
   String.raw`(?:was|mrp)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+.*(?:now|offer)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+`,
   "i"
@@ -34,6 +13,10 @@ function compactSnippet(value: string, maxLength = 120): string {
   const compact = value.replace(/\s+/g, " ").trim();
   if (compact.length <= maxLength) return compact;
   return `${compact.slice(0, maxLength - 3)}...`;
+}
+
+function snippet(text: string, start: number, end: number): string {
+  return compactSnippet(text.slice(Math.max(0, start), Math.min(text.length, end)));
 }
 
 function cloneRegex(pattern: RegExp, forceGlobal = false): RegExp {
@@ -47,111 +30,99 @@ function findFirstEvidence(text: string, pattern: RegExp): string | null {
   return match ? compactSnippet(match[0]) : null;
 }
 
-function findAllEvidence(text: string, pattern: RegExp, limit = 3): string[] {
-  const regex = cloneRegex(pattern, true);
-  const evidences: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(text)) !== null && evidences.length < limit) {
-    const evidence = compactSnippet(match[0]);
-    if (!evidences.includes(evidence)) {
-      evidences.push(evidence);
-    }
-    if (match.index === regex.lastIndex) {
-      regex.lastIndex += 1;
-    }
-  }
-
-  return evidences;
-}
-
-function parseAmountWithUnit(rawAmount: string, rawUnit?: string): number {
-  const numeric = parseFloat(rawAmount.replace(/,/g, ""));
-  if (!Number.isFinite(numeric)) return NaN;
-  const unit = rawUnit?.toLowerCase().trim() ?? "";
-  return numeric * (UNIT_MULTIPLIERS[unit] ?? 1);
-}
-
-function detectCurrencyCode(text: string): SupportedCurrency {
-  let detected: SupportedCurrency = "USD";
-  let maxMatches = 0;
-
-  for (const rule of CURRENCY_DETECTION_RULES) {
-    const matches = text.match(new RegExp(rule.source, "gi"))?.length ?? 0;
-    if (matches > maxMatches) {
-      maxMatches = matches;
-      detected = rule.code;
-    }
-  }
-
-  return detected;
-}
-
 export interface ExtractedValues {
   loanAmount: number | null;
   interestRate: number | null;
+  interestRateIsConditional?: boolean;
   tenureMonths: number | null;
+  principalField: ExtractedField<number>;
+  rateField: AnalysisContext["rateField"];
+  termField: ExtractedField<number>;
+  statedEMI: ExtractedField<number>;
+  amountCandidates: ReturnType<typeof extractAmountCandidates>;
+  installmentCount: number | null;
+  docType: AnalysisContext["docType"];
   extracted: boolean;
 }
 
 export function extractValuesFromText(text: string): ExtractedValues {
-  let loanAmount: number | null = null;
-  let interestRate: number | null = null;
-  let tenureMonths: number | null = null;
+  const amountCandidates = extractAmountCandidates(text);
+  const docType = classifyDocument(text);
+  const statedEMI = extractStatedEMI(text, amountCandidates);
+  const parsedTerm = normalizeDuration(text);
+  const termField: ExtractedField<number> = parsedTerm
+    ? { value: parsedTerm.months, source: parsedTerm.source, confidence: parsedTerm.confidence === "high" ? 0.95 : 0.65, alternatives: [], needsReview: false }
+    : { value: null, source: null, confidence: 0, alternatives: [], needsReview: false };
 
-  // Extract loan/credit amount
-  const amountPatterns = [
-    new RegExp(String.raw`(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}${CURRENCY_AMOUNT_SOURCE}\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
-    /(?:loan|credit|principal|borrow|finance|amount|sum|balance|sanction(?:ed)?\s*amount)[^\d]{0,25}([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)\b/i,
-    new RegExp(String.raw`${CURRENCY_AMOUNT_SOURCE}\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?\s*(?:loan|credit|principal|amount)?`, "i"),
-    new RegExp(String.raw`(?:up\s*to|maximum|limit)[^\d]{0,25}(?:${CURRENCY_AMOUNT_SOURCE})?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
-    new RegExp(String.raw`(?:amount|balance|sum)\s*(?:of|:)\s*(?:${CURRENCY_AMOUNT_SOURCE})?\s*([\d,]+(?:\.\d+)?)\s*(lakh|lac|crore|million|billion|thousand|k)?`, "i"),
-  ];
-  for (const pattern of amountPatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const val = parseAmountWithUnit(match[1], match[2]);
-      if (Number.isFinite(val) && val > 100) { loanAmount = val; break; }
+  let conditionalInterestRate: number | null = null;
+  const deferredApr = text.match(/\bdeferred\s+interest[\s\S]{0,500}?(\d+(?:\.\d+)?)\s*%\s*apr\b/i);
+  if (deferredApr) conditionalInterestRate = Number(deferredApr[1]);
+  const rateMatches = Array.from(text.matchAll(/(?:\b(?:apr|annual\s+percentage\s+rate|interest\s+rate)\b[^%\d]{0,30}(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%\s*(?:apr|annual|interest|p\.?a\.?))/gi));
+  let ordinaryRate: { value: number; source: string; position: number } | null = null;
+  for (const match of rateMatches) {
+    const statedValue = Number(match[1] ?? match[2]);
+    if (!Number.isFinite(statedValue) || statedValue < 0 || statedValue > 10000) continue;
+    const position = match.index ?? 0;
+    const context = text.slice(Math.max(0, position - 160), Math.min(text.length, position + match[0].length + 160));
+    if (statedValue === conditionalInterestRate || /deferred\s+interest|retroactiv\w*/i.test(context)) {
+      conditionalInterestRate ??= statedValue;
+      continue;
     }
+    const periodText = text.slice(position, Math.min(text.length, position + match[0].length + 40));
+    const periodMatch = periodText.match(/\b(?:per|each)\s+(day|week|fortnight|month|year)s?\b|\b(daily|weekly|fortnightly|monthly|annually|annual)\b/i);
+    const period = periodMatch ? parseTimeUnit(periodMatch[1] ?? periodMatch[2]) : null;
+    const isAlreadyAnnual = /\b(?:apr|annual|p\.?a\.?)\b/i.test(match[0] + " " + periodText);
+    const annualValue = period && !isAlreadyAnnual ? toAnnualRate(statedValue, period) ?? statedValue : statedValue;
+    ordinaryRate = { value: annualValue, source: snippet(text, position - 35, position + match[0].length + 40), position };
+    break;
   }
 
-  // Extract interest rate / APR
-  const ratePatterns = [
-    /(?:apr|annual\s*percentage\s*rate|interest\s*rate)[^%\d]*(\d+(?:\.\d+)?)\s*%/i,
-    /(\d+(?:\.\d+)?)\s*%\s*(?:apr|annual|interest|variable|fixed)/i,
-    /(?:rate|apr)\s*(?:of|is|:)\s*(\d+(?:\.\d+)?)\s*%/i,
-    /(\d+(?:\.\d+)?)\s*%\s*(?:per\s*annum|p\.?a\.?)/i,
-  ];
-  for (const pattern of ratePatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const val = parseFloat(match[1]);
-      if (val > 0 && val < 100) { interestRate = val; break; }
-    }
+  const interestRateIsConditional = ordinaryRate === null && conditionalInterestRate !== null;
+  let interestRate = ordinaryRate?.value ?? conditionalInterestRate;
+  let rateSource = ordinaryRate?.source ?? (interestRateIsConditional ? compactSnippet(text.slice(Math.max(0, deferredApr?.index ?? 0), (deferredApr?.index ?? 0) + (deferredApr?.[0].length ?? 0))) : null);
+  let rateType: AnalysisContext["rateField"]["rateType"] = interestRateIsConditional ? "deferred" : /\bflat\b/i.test(ordinaryRate?.source ?? "") ? "flat" : docType.type === "credit_card" ? "revolving" : ordinaryRate ? "reducing" : "unknown";
+  let rateConfidence = ordinaryRate ? 0.95 : interestRateIsConditional ? 0.92 : 0;
+  if (interestRate === null && /\b(?:interest[- ]free|no\s+interest|0%\s+interest)\b/i.test(text) && conditionalInterestRate === null) {
+    interestRate = 0;
+    rateSource = (text.match(/interest[- ]free|no\s+interest|0%\s+interest/i) ?? [])[0] ?? null;
+    rateType = "reducing";
+    rateConfidence = 0.8;
   }
-
-  // Extract tenure/duration
-  const tenurePatterns = [
-    /(\d+)\s*(?:months?|month\s*term|monthly\s*(?:payment|installment)s?)/i,
-    /(?:tenure|term|duration|period|repayment)\s*(?:of|is|:)?\s*(\d+)\s*(?:months?|mo)/i,
-    /(\d+)\s*(?:year|yr)s?\s*(?:term|tenure|duration|period|loan|repayment)?/i,
-    /(?:over|for|within)\s*(\d+)\s*months?/i,
-  ];
-  for (const pattern of tenurePatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      let val = parseInt(match[1] || match[2], 10);
-      // If matched via year pattern, convert
-      if (/year|yr/i.test(match[0]) && val < 100) val *= 12;
-      if (val > 0 && val <= 600) { tenureMonths = val; break; }
-    }
-  }
+  const rateField: AnalysisContext["rateField"] = {
+    value: interestRate,
+    source: rateSource,
+    confidence: rateConfidence,
+    alternatives: rateMatches.map((match) => {
+      const statedValue = Number(match[1] ?? match[2]);
+      const position = match.index ?? 0;
+      const periodText = text.slice(position, Math.min(text.length, position + match[0].length + 40));
+      const periodMatch = periodText.match(/\b(?:per|each)\s+(day|week|fortnight|month|year)s?\b|\b(daily|weekly|fortnightly|monthly|annually|annual)\b/i);
+      const period = periodMatch ? parseTimeUnit(periodMatch[1] ?? periodMatch[2]) : null;
+      const isAlreadyAnnual = /\b(?:apr|annual|p\.?a\.?)\b/i.test(match[0] + " " + periodText);
+      const value = period && !isAlreadyAnnual ? toAnnualRate(statedValue, period) ?? statedValue : statedValue;
+      return { value, label: "APR", source: compactSnippet(text.slice(Math.max(0, position - 30), position + match[0].length + 30)), position, confidence: statedValue === conditionalInterestRate ? 0.92 : 0.85, score: 0 };
+    }),
+    needsReview: false,
+    rateType,
+  };
+  const principalField = scorePrincipalCandidates(amountCandidates, interestRate, parsedTerm, statedEMI.value, docType.type);
+  const loanAmount = principalField.value;
+  const installmentCountMatch = text.match(/\b(?:pay\s+in\s+)?(\d+)\s+(?:(?:interest[- ]free|equal|fixed)\s+)?installments?\b/i);
+  const installmentCount = installmentCountMatch ? Number(installmentCountMatch[1]) : null;
 
   return {
     loanAmount,
     interestRate,
-    tenureMonths,
-    extracted: loanAmount !== null || interestRate !== null || tenureMonths !== null,
+    interestRateIsConditional,
+    tenureMonths: termField.value,
+    principalField,
+    rateField,
+    termField,
+    statedEMI,
+    amountCandidates,
+    installmentCount,
+    docType,
+    extracted: loanAmount !== null || interestRate !== null || termField.value !== null,
   };
 }
 
@@ -212,171 +183,232 @@ export function detectDeception(text: string): DeceptionResult {
   return { urgencyTactics, fakeDiscounts, emotionalManipulation };
 }
 
-export function generateAdvice(riskScore: number, rate: number, totalInterest: number, principal: number, hiddenFees: string[]): AdviceResult {
-  const interestRatio = principal > 0 ? totalInterest / principal : 0;
-
-  let recommendation: AdviceResult["recommendation"] = "take";
-  if (riskScore >= 60 || rate > 25 || interestRatio > 0.5) recommendation = "avoid";
-  else if (riskScore >= 30 || rate > 15 || hiddenFees.length >= 3) recommendation = "caution";
-
-  const reasons: string[] = [];
-  if (rate > 20) reasons.push(`Interest rate of ${rate}% is well above the national average of ~11%.`);
-  else if (rate > 10) reasons.push(`Interest rate of ${rate}% is moderate — shop around for sub-10% options.`);
-  else if (rate > 0) reasons.push(`Interest rate of ${rate}% is competitive.`);
-  else reasons.push("Interest rate could not be determined — verify before proceeding.");
-
-  if (interestRatio > 0.5) reasons.push(`You'd pay ${(interestRatio * 100).toFixed(0)}% of the principal in interest — that's very expensive.`);
-  if (hiddenFees.length > 0) reasons.push(`${hiddenFees.length} hidden fee(s) detected that increase the true cost.`);
-  if (riskScore >= 60) reasons.push("High risk score indicates aggressive terms and potential traps.");
-
-  const alternatives: string[] = [];
-  if (rate > 15) alternatives.push("Credit unions typically offer rates 5-10% lower than banks.");
-  if (rate > 20) alternatives.push("Consider a secured loan or credit-builder loan at lower rates.");
-  alternatives.push("Compare at least 3 lenders before committing.");
-  if (interestRatio > 0.3) alternatives.push("Shorter loan terms significantly reduce total interest paid.");
-
-  const tips: string[] = [
-    "Always read the full agreement — not just the summary.",
-    "Negotiate fees — many lenders will waive origination and processing fees.",
-    "Set up autopay to avoid late fees and potential penalty APR.",
-  ];
-  if (rate > 15) tips.push("Improve your credit score by 50+ points to qualify for much better rates.");
-
-  return { recommendation, reasons, alternatives, tips };
+export function generateAdvice(riskScore: number, confidence: number, contradictedClaims: boolean, riskBreakdown: AnalysisContext["riskBreakdown"]): AdviceResult {
+  const reasons = riskBreakdown.flatMap((item) => item.reasons);
+  if (contradictedClaims) reasons.unshift("A marketing claim conflicts with terms listed in the document.");
+  if (confidence < 0.75) reasons.unshift("Key facts could not be extracted with enough confidence; verify the source document.");
+  if (!reasons.length) reasons.push("No configured risk patterns were found in the extracted text.");
+  return {
+    recommendation: confidence < 0.75 ? "insufficient_confidence" : riskScore >= 30 || contradictedClaims ? "review_required" : "no_material_flags",
+    reasons: Array.from(new Set(reasons)),
+  };
 }
 
-export function analyzeLocally(text: string, amount: number, rate: number, duration: number, overrideCurrency?: SupportedCurrency): AnalysisResult & { deception: DeceptionResult; advice: AdviceResult } {
-  const { emi, totalPayment, totalInterest } = calculateEMI(amount, rate, duration);
-  const currencyCode = overrideCurrency || detectCurrencyCode(text);
+export function generateLocalGlossary(text: string): GlossaryItem[] {
+  return rules.glossary.filter((item) => new RegExp(item.pattern, "i").test(text)).map(({ term, definition }) => ({ term, definition }));
+}
 
-  const hiddenFees: string[] = [];
+export function generateLocalFairMarket(rate: number, currency: SupportedCurrency, docType: string, region: string | null): FairMarketBenchmark | undefined {
+  const entries = (rules as { benchmarks?: Array<{ currency: string; docType: string; region: string | null; marketAverage: number; source: string; asOf: string }> }).benchmarks ?? [];
+  const match = entries.find((entry) => entry.currency === currency && entry.docType === docType && entry.region === region);
+  if (!match || rate <= 0 || !match.source || !match.asOf) return undefined;
+  const differencePercent = Math.round(((rate - match.marketAverage) / match.marketAverage) * 100);
+  return { marketAverage: match.marketAverage, differencePercent, source: match.source, asOf: match.asOf, assessment: rate + "% is " + (differencePercent >= 0 ? differencePercent + "% above" : Math.abs(differencePercent) + "% below") + " the matched " + match.docType + " benchmark." };
+}
+
+export function generateLocalAlternativeFunding(rate: number, amount: number, currencyCode: SupportedCurrency, docType: string, maximumSavings: number): AlternativeFunding[] {
+  const entries = (rules as { alternatives?: Array<AlternativeFunding & { docTypes?: string[]; currencies?: string[]; maximumAPR?: number; savingsPercent?: number }> }).alternatives ?? [];
+  return entries.flatMap((entry) => {
+    if (entry.docTypes?.length && !entry.docTypes.includes(docType)) return [];
+    if (entry.currencies?.length && !entry.currencies.includes(currencyCode)) return [];
+    if (entry.maximumAPR !== undefined && rate > entry.maximumAPR) return [];
+    if (entry.savingsPercent !== undefined && maximumSavings > 0) {
+      const savings = Math.min(maximumSavings, Math.max(0, amount * entry.savingsPercent / 100));
+      return [{ ...entry, estimatedSavings: "Up to " + formatCurrency(savings, currencyCode) + " (estimate)" }];
+    }
+    return [{ title: entry.title, description: entry.description, estimatedSavings: entry.estimatedSavings }];
+  });
+}
+
+function extractInstallmentSchedule(text: string): InstallmentSchedule | null {
+  const match = text.match(/\b(?:pay\s+in\s+)?(?<count>\d+)\s+(?:(?:interest[- ]free|equal|fixed)\s+)?installments?\s+of\s+(?:US\$|C\$|A\$|S\$|\$|₹|€|£|¥|INR\s*|USD\s*|EUR\s*|GBP\s*|Rs\.?\s*)?(?<amount>\d{1,3}(?:,\d{2,3})+|\d+)(?:\.(?<decimal>\d+))?[\s\S]{0,80}?every\s+(?<interval>\d+)\s*(?<unit>days?|weeks?|months?)/i);
+  if (!match?.groups) return null;
+  const count = Number(match.groups.count);
+  const amount = Number(match.groups.amount.replace(/,/g, "") + (match.groups.decimal ? "." + match.groups.decimal : ""));
+  const interval = Number(match.groups.interval);
+  const unit = match.groups.unit.toLowerCase();
+  const intervalUnit: InstallmentSchedule["intervalUnit"] = unit.startsWith("day") ? "day" : unit.startsWith("week") ? "week" : "month";
+  if (![count, amount, interval].every(Number.isFinite) || count <= 0 || amount <= 0 || interval <= 0) return null;
+  return { count, amount, interval, intervalUnit, total: count * amount, totalWithKnownFees: null, source: compactSnippet(match[0]) };
+}
+
+function confidenceForAnalysis(context: Pick<AnalysisContext, "docType" | "principalField" | "rateField" | "termField" | "installmentSchedule">): number {
+  const type = context.docType.type;
+  const scores = [context.docType.confidence];
+  if (["installment_loan", "auto_loan", "mortgage", "bnpl", "payday", "rent_to_own", "gold_loan"].includes(type)) {
+    scores.push(context.principalField.confidence);
+    if (type === "bnpl") scores.push(context.installmentSchedule ? 0.9 : context.termField.confidence);
+    else scores.push(context.termField.confidence, context.rateField.confidence);
+  }
+  if (type === "unknown") scores.push(context.principalField.confidence, context.rateField.confidence, context.termField.confidence);
+  return scores.length ? Math.min(...scores) : context.docType.confidence;
+}
+
+export function analyzeLocally(
+  text: string,
+  amountOverride: number | null = null,
+  rateOverride: number | null = null,
+  durationOverride: number | null = null,
+  currencyOverride: SupportedCurrency | null = null,
+): AnalysisContext {
+  const extracted = extractValuesFromText(text);
+  const principalField: AnalysisContext["principalField"] = amountOverride && amountOverride > 0
+    ? { value: amountOverride, source: "User override", confidence: 1, alternatives: extracted.principalField.alternatives, needsReview: false }
+    : extracted.principalField;
+  const termField: AnalysisContext["termField"] = durationOverride && durationOverride > 0
+    ? { value: durationOverride, source: "User override", confidence: 1, alternatives: extracted.termField.alternatives, needsReview: false }
+    : extracted.termField;
+  const useRateOverride = rateOverride !== null && rateOverride >= 0 && rateOverride !== extracted.rateField.value;
+  const rateType: AnalysisContext["rateField"]["rateType"] = useRateOverride
+    ? extracted.rateField.rateType === "deferred" ? "deferred" : "reducing"
+    : extracted.rateField.rateType;
+  const rateField: AnalysisContext["rateField"] = useRateOverride
+    ? { value: rateOverride, source: "User override", confidence: 1, alternatives: extracted.rateField.alternatives, needsReview: false, rateType }
+    : { ...extracted.rateField, rateType };
+  const currency = currencyOverride ?? detectCurrency(text);
+  const currencyCode = currency ?? "USD";
+  const principal = principalField.value;
+  const duration = termField.value;
+  const schedule = extractInstallmentSchedule(text);
+  const installmentCount = schedule?.count ?? extracted.installmentCount;
+  const findings = detectCosts(text, principal, installmentCount, duration);
+  const fees = findings.filter((finding) => finding.category !== "financed_addon" && finding.category !== "tax");
+  const addOns = findings.filter((finding) => finding.category === "financed_addon");
+  const taxes = findings.filter((finding) => finding.category === "tax");
+  const claims = detectClaims(text, findings, rateField.rateType === "deferred" ? null : rateField.value);
+  const confidence = confidenceForAnalysis({ docType: extracted.docType, principalField, rateField, termField, installmentSchedule: schedule });
+  const risk = calculateRisk(text, extracted.docType.type, findings, claims, confidence);
   const warnings: string[] = [];
-  let riskScore = 20;
+  for (const claim of claims.filter((item) => item.contradicted)) warnings.push(claim.label + ": " + claim.contradiction + " Evidence: " + claim.source + ".");
+  for (const finding of findings.filter((item) => !item.negated)) warnings.push(finding.label + " detected. " + finding.explanation + " Evidence: " + finding.source + ".");
+  for (const rule of rules.riskRules) {
+    if (!rule.pattern) continue;
+    const evidence = findFirstEvidence(text, new RegExp(rule.pattern, "i"));
+    if (evidence) warnings.push(rule.id.replace(/_/g, " ") + " term detected. Evidence: " + evidence + ".");
+  }
+  if (extracted.interestRateIsConditional && rateField.value !== null) {
+    warnings.push("Conditional deferred APR of " + extracted.interestRate + "% is stated; it is not used as the standard payment rate. Evidence: " + (rateField.source ?? "deferred-interest clause") + ".");
+  }
+  if (principalField.needsReview) warnings.push("The principal amount is ambiguous or conflicts with the stated installment; choose a source amount before relying on payment calculations.");
+  if (currency === null) warnings.push("Currency was not identified in the text; amounts are displayed using the USD fallback until you select a currency.");
 
-  const feePatterns: Array<{ pattern: RegExp; label: string }> = [
-    { pattern: new RegExp(String.raw`annual\s*fee[:\s]*(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"), label: "Annual Fee" },
-    { pattern: /balance\s*transfer\s*fee[:\s]*(?:\d+%)/i, label: "Balance Transfer Fee" },
-    { pattern: /cash\s*advance\s*fee[:\s]*(?:\d+%)/i, label: "Cash Advance Fee" },
-    { pattern: /foreign\s*transaction\s*fee[:\s]*(?:\d+%)/i, label: "Foreign Transaction Fee" },
-    {
-      pattern: new RegExp(String.raw`late\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"),
-      label: "Late Payment Fee",
-    },
-    {
-      pattern: new RegExp(String.raw`returned\s*payment\s*fee[:\s]*(?:up\s*to\s*)?(?:${CURRENCY_AMOUNT_SOURCE})?[\d,.]+`, "i"),
-      label: "Returned Payment Fee",
-    },
-    { pattern: /prepayment\s*(?:penalty|fee)/i, label: "Prepayment Penalty" },
-    { pattern: /origination\s*fee/i, label: "Origination Fee" },
-    { pattern: /processing\s*fee/i, label: "Processing Fee" },
-  ];
+  if (schedule) {
+    const knownFees = findings.filter((finding) => !finding.negated && (
+      finding.frequency === "per_installment" ||
+      (finding.frequency === "monthly" && finding.category === "financed_addon" && /automatically added|automatically enrolled/i.test(finding.source))
+    )).reduce((sum, finding) => sum + (finding.totalImpact ?? 0), 0);
+    schedule.totalWithKnownFees = schedule.total + knownFees;
+    if (principal !== null && Math.abs(schedule.total - principal) > 0.01) {
+      warnings.push("The stated installments total " + formatCurrency(schedule.total, currencyCode) + ", which differs from the purchase or principal amount " + formatCurrency(principal, currencyCode) + ".");
+    }
+    if (knownFees > 0) warnings.push("Scheduled payments plus identified recurring charges total at least " + formatCurrency(schedule.totalWithKnownFees, currencyCode) + "; conditional missed-payment charges are excluded.");
+  }
 
-  for (const { pattern, label } of feePatterns) {
-    const evidenceMatches = findAllEvidence(text, pattern, 3);
-    if (evidenceMatches.length > 0) {
-      for (const evidence of evidenceMatches) {
-        hiddenFees.push(`${label}: ${evidence}`);
-      }
-      riskScore += 6 + Math.min(2, evidenceMatches.length - 1) * 2;
+  const hiddenFees = findings.filter((finding) => !finding.negated).map((finding) => {
+    const impact = finding.totalImpact !== null ? " Estimated impact: " + formatCurrency(finding.totalImpact, currencyCode) + "." : " Total impact could not be determined from the text.";
+    return finding.label + ": " + finding.source + "." + impact;
+  });
+  const standardRateAvailable = rateField.value !== null && rateField.rateType !== "deferred" && rateField.rateType !== "revolving";
+  const financeCalculationAllowed = !["bnpl", "credit_card", "subscription", "advance_fee_scam"].includes(extracted.docType.type);
+  const financialMetricsAvailable = Boolean(principal && principal > 0 && duration && duration > 0 && standardRateAvailable && financeCalculationAllowed);
+  const upfrontFees = findings.filter((finding) => !finding.negated && finding.category === "upfront_fee" && finding.totalImpact !== null).reduce((sum, finding) => sum + (finding.totalImpact ?? 0), 0);
+  const monthlyCost = findings.filter((finding) => !finding.negated && finding.frequency === "monthly" && finding.category !== "tax" && finding.amount !== null).reduce((sum, finding) => sum + (finding.amount ?? 0), 0);
+  const annualCost = findings.filter((finding) => !finding.negated && finding.frequency === "annual" && finding.totalImpact !== null).reduce((sum, finding) => sum + (finding.totalImpact ?? 0), 0);
+  const monthlyFees = monthlyCost + (duration && duration > 0 ? annualCost / duration : 0);
+  let emi: number | null = null;
+  let totalPayment: number | null = null;
+  let totalInterest: number | null = null;
+  let totalCost: number | null = null;
+  let effectiveAPR: number | null = null;
+  let netDisbursed: number | null = null;
+  if (financialMetricsAvailable && principal !== null && duration !== null && rateField.value !== null) {
+    const base = rateField.rateType === "flat"
+      ? calculateFlatLoan(principal, rateField.value, duration)
+      : calculateEMI(principal, rateField.value, duration);
+    const analysis = analyzeLoan({ principal, annualRate: rateField.value, tenureMonths: duration, rateType: rateField.rateType === "flat" ? "flat" : "reducing", upfrontFees, monthlyFees });
+    if (base && analysis) {
+      emi = base.emi + monthlyFees;
+      totalPayment = analysis.totalPayment;
+      totalInterest = base.totalInterest;
+      netDisbursed = analysis.netDisbursed;
+      totalCost = analysis.totalCost;
+      effectiveAPR = analysis.effectiveAPR;
     }
   }
 
-  const warningRules: Array<{ pattern: RegExp; message: string; risk: number }> = [
-    {
-      pattern: /\bpenalty\s*apr\b/i,
-      message: "Penalty APR clause found — your rate could increase significantly after a missed payment.",
-      risk: 15,
-    },
-    {
-      pattern: /\bvariable\b[\s\S]{0,80}\bprime\s*rate\b/i,
-      message: "Variable rate tied to Prime Rate — your payments could increase when rates rise.",
-      risk: 10,
-    },
-    {
-      pattern: /\b(?:change|modify)\s+(?:the\s+)?terms?\b/i,
-      message: "Lender reserves the right to change terms — review trigger conditions carefully.",
-      risk: 12,
-    },
-    {
-      pattern: /\bminimum\s*payment\b[\s\S]{0,90}\b(?:greater\s*of|interest|fees|%)\b/i,
-      message: "Minimum-payment clause detected — paying only minimums can significantly raise total interest.",
-      risk: 5,
-    },
-    {
-      pattern: /\b(?:introductory|promotional)\s*(?:apr|rate)?\b/i,
-      message: "Promotional rate language present — verify post-promo pricing and trigger conditions.",
-      risk: 5,
-    },
-    {
-      pattern: /\bindefinitely\b[\s\S]{0,80}\b(?:apply|penalty|apr|rate)\b|\b(?:penalty|apr|rate)\b[\s\S]{0,80}\bindefinitely\b/i,
-      message: "Penalty terms may apply indefinitely — this is an aggressive risk clause.",
-      risk: 10,
-    },
-  ];
-
-  for (const rule of warningRules) {
-    const evidence = findFirstEvidence(text, rule.pattern);
-    if (!evidence) continue;
-    warnings.push(`${rule.message} Evidence: ${evidence}.`);
-    riskScore += rule.risk;
-  }
-
-  if (rate > 20) {
-    warnings.push(`High interest rate of ${rate}% — significantly above average market rates.`);
-    riskScore += 10;
-  }
-
-  const uniqueHiddenFees = Array.from(new Set(hiddenFees));
-  const uniqueWarnings = Array.from(new Set(warnings));
-
-  riskScore = Math.min(riskScore, 100);
-
-  const interestPct = amount > 0 ? ((totalInterest / amount) * 100).toFixed(1) : "0";
-
-  let summary: string;
-  if (amount > 0 && rate > 0 && duration > 0) {
-    summary = `This agreement involves a loan/credit of ${formatCurrency(amount, currencyCode)} at ${rate}% annual interest over ${duration} months. ` +
-      `Your monthly payment would be ${formatCurrency(emi, currencyCode)}, totaling ${formatCurrency(totalPayment, currencyCode)} — meaning you'd pay ${formatCurrency(totalInterest, currencyCode)} (${interestPct}%) in interest alone. ` +
-      `${uniqueHiddenFees.length > 0 ? `We detected ${uniqueHiddenFees.length} fee(s) that could increase your actual cost.` : "No significant hidden fees were detected."} ` +
-      `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."}`;
-  } else {
-    summary = `Analysis of this financial document detected ${uniqueHiddenFees.length} fee(s) and ${uniqueWarnings.length} warning(s). ` +
-      `${riskScore >= 60 ? "This agreement carries HIGH risk — proceed with caution." : riskScore >= 30 ? "This agreement has moderate risk factors to be aware of." : "This agreement appears relatively straightforward."} ` +
-      `Some financial values could not be determined — EMI calculations may be incomplete.`;
-  }
+  const advice = generateAdvice(risk.score, confidence, claims.some((claim) => claim.contradicted), risk.breakdown);
+  const conditionalText = extracted.interestRateIsConditional && rateField.value !== null
+    ? " A conditional deferred APR of " + extracted.interestRate + "% may be charged retroactively; it is not modeled as the standard installment rate."
+    : "";
+  const feeText = hiddenFees.length ? hiddenFees.length + " cost clause(s) were identified." : "No configured fee clauses were identified in the text.";
+  const summary = schedule
+    ? "The document schedules " + schedule.count + " payments of " + formatCurrency(schedule.amount, currencyCode) + " every " + schedule.interval + " " + schedule.intervalUnit + (schedule.interval === 1 ? "" : "s") + ", totaling " + formatCurrency(schedule.total, currencyCode) + " before fees. " + feeText + conditionalText
+    : financialMetricsAvailable && emi !== null && totalPayment !== null && totalInterest !== null && principal !== null && duration !== null
+      ? "The agreement states " + formatCurrency(principal, currencyCode) + " at " + rateField.value + "% " + (rateField.rateType === "flat" ? "flat " : "") + "annual rate over " + duration + " months. Estimated monthly payment including identified monthly fees is " + formatCurrency(emi, currencyCode) + "; scheduled payments total " + formatCurrency(totalPayment, currencyCode) + ", with an estimated total finance cost of " + formatCurrency(totalCost, currencyCode) + " including " + formatCurrency(totalInterest, currencyCode) + " interest and modeled fees." + (effectiveAPR !== null ? " Estimated effective APR after modeled fees is " + effectiveAPR.toFixed(2) + "%." : "") + " " + feeText
+      : "Document scan classified this as " + extracted.docType.label.toLowerCase() + ". " + feeText + conditionalText + " Payment calculations are unavailable until the required amount, applicable rate, and term are supported.";
 
   const insights: string[] = [];
-  if (amount > 0 && rate > 0 && duration > 0) {
-    insights.push(`At ${rate}% APR, you're paying ${interestPct}% extra over the loan term. Consider negotiating a lower rate.`);
-    insights.push(
-      totalInterest > amount * 0.3
-        ? "Your total interest exceeds 30% of the principal — this is an expensive loan. Shop around for better rates."
-        : "Your interest-to-principal ratio is within reasonable bounds for this rate."
-    );
-    insights.push(`Monthly EMI of ${formatCurrency(emi, currencyCode)} represents ${((emi / (amount / duration)) * 100 - 100).toFixed(0)}% more than a zero-interest payment would be.`);
+  if (schedule) insights.push("Installment arithmetic: " + schedule.count + " × " + formatCurrency(schedule.amount, currencyCode) + " = " + formatCurrency(schedule.total, currencyCode) + " before fees.");
+  if (schedule?.totalWithKnownFees !== null && schedule?.totalWithKnownFees !== undefined && schedule.totalWithKnownFees > schedule.total) {
+    insights.push("Identified fees raise scheduled cost to at least " + formatCurrency(schedule.totalWithKnownFees, currencyCode) + "; missed-payment and rescheduling costs are conditional.");
   }
-  insights.push(
-    uniqueHiddenFees.length >= 3
-      ? "Multiple fee types detected. Request a complete fee schedule and compare with competitors."
-      : "Fee structure appears manageable, but always confirm all charges before signing."
-  );
+  if (principalField.needsReview) insights.push("More than one amount could be the principal. Select the labeled amount that matches the contract's amount financed.");
+  if (effectiveAPR !== null && rateField.value !== null && effectiveAPR > rateField.value + 0.01) {
+    insights.push("Modeled fees raise the estimated effective APR from " + rateField.value + "% to " + effectiveAPR.toFixed(2) + "%.");
+  }
+  if (confidence < 0.75) insights.push("Extraction confidence is limited; the risk score is marked insufficient confidence.");
+  if (!insights.length) insights.push("No additional arithmetic insight is available from the extracted fields.");
 
-  const deception = detectDeception(text);
-  const advice = generateAdvice(riskScore, rate, totalInterest, amount, uniqueHiddenFees);
-
-  return {
+  const simulatorLateFee = findings.find((finding) => finding.id === "late_payment" && !finding.negated);
+  const penaltyMatch = text.match(/\bpenalty\s*apr\b[^\d]{0,25}(\d+(?:\.\d+)?)\s*%/i);
+  const maximumSavings = (totalInterest ?? 0) + findings.filter((finding) => !finding.negated).reduce((sum, finding) => sum + (finding.totalImpact ?? 0), 0);
+  const context: AnalysisContext = {
+    docType: extracted.docType,
+    region: null,
+    currency,
+    currencyCode,
+    principalField,
+    rateField,
+    termField,
+    statedEMI: extracted.statedEMI,
+    installmentSchedule: schedule,
+    principal,
+    fees,
+    addOns,
+    taxes,
+    claims,
+    confidence,
+    warnings: Array.from(new Set(warnings)),
+    riskScore: risk.score,
+    riskBand: risk.band,
+    riskBreakdown: risk.breakdown,
     summary,
-    hiddenFees: uniqueHiddenFees,
-    warnings: uniqueWarnings,
-    riskScore,
+    hiddenFees,
     insights,
     emi,
     totalPayment,
     totalInterest,
-    principal: amount,
-    currencyCode,
-    deception,
+    totalCost,
+    financialMetricsAvailable: financialMetricsAvailable && emi !== null,
+    effectiveAPR,
+    netDisbursed,
+    deception: detectDeception(text),
     advice,
+    glossary: generateLocalGlossary(text),
+    fairMarketComparison: standardRateAvailable && rateField.value !== null
+      ? generateLocalFairMarket(rateField.value, currencyCode, extracted.docType.type, null)
+      : undefined,
+    alternativeFunding: standardRateAvailable && rateField.value !== null && principal !== null
+      ? generateLocalAlternativeFunding(rateField.value, principal, currencyCode, extracted.docType.type, maximumSavings)
+      : [],
+    simulator: {
+      lateFeeAmount: simulatorLateFee?.amount ?? null,
+      lateFeePercent: simulatorLateFee?.percent ?? null,
+      lateFeeBasis: simulatorLateFee?.basis ?? null,
+      penaltyAPR: penaltyMatch ? Number(penaltyMatch[1]) : null,
+      isAssumption: !simulatorLateFee && !penaltyMatch,
+    },
     rawText: text,
   };
+  return freezeAnalysisContext(context) as AnalysisContext;
 }

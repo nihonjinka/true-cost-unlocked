@@ -1,20 +1,367 @@
-// EMI Calculation: EMI = (P * r * (1+r)^n) / ((1+r)^n - 1)
-export function calculateEMI(principal: number, annualRate: number, tenureMonths: number) {
-  if (principal <= 0 || tenureMonths <= 0) return { emi: 0, totalPayment: 0, totalInterest: 0 };
+
+
+const isNum = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+
+// ---------------------------------------------------------------------------
+// Time units + rate normalization
+// ---------------------------------------------------------------------------
+
+export type TimeUnit = "day" | "week" | "fortnight" | "month" | "year";
+
+const MONTHS_PER_UNIT: Record<TimeUnit, number> = {
+  day: 12 / 365,
+  week: 12 / 52,
+  fortnight: 12 / 26,
+  month: 1,
+  year: 12,
+};
+
+const PERIODS_PER_YEAR: Record<TimeUnit, number> = {
+  day: 365,
+  week: 52,
+  fortnight: 26,
+  month: 12,
+  year: 1,
+};
+
+export function parseTimeUnit(raw: string): TimeUnit | null {
+  const s = raw.trim().toLowerCase();
+  if (/^(day|days)$/.test(s)) return "day";
+  if (/^(week|weeks|weekly)$/.test(s)) return "week";
+  if (/^(fortnight|fortnights|fortnightly|bi-?weekly)$/.test(s)) return "fortnight";
+  if (/^(month|months|mo|mos|monthly)$/.test(s)) return "month";
+  if (/^(year|years|yr|yrs|annum|annual|annually|p\.?a\.?)$/.test(s)) return "year";
+  return null;
+}
+
+/** Convert a duration (e.g. 14 days, 3 years) to months. */
+export function toMonths(value: number, unit: TimeUnit): number | null {
+  if (!isNum(value) || value <= 0) return null;
+  return value * MONTHS_PER_UNIT[unit];
+}
+
+/** Convert a periodic nominal rate (e.g. 1.5% per month) to an annual nominal rate (%). */
+export function toAnnualRate(value: number, per: TimeUnit): number | null {
+  if (!isNum(value) || value < 0) return null;
+  return value * PERIODS_PER_YEAR[per];
+}
+
+const NUMBER_WORDS: Record<string, string> = {
+  one: "1", two: "2", three: "3", four: "4", five: "5", six: "6",
+  seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12",
+};
+
+export interface ParsedDuration {
+  months: number;
+  /** "high" = explicitly labeled term/tenure/installment schedule; "low" = guessed from context */
+  confidence: "high" | "low";
+  /** The text that produced the match (for highlighting / explainability) */
+  source: string;
+}
+
+const UNIT_RE = "(years?|yrs?|months?|mos?|weeks?|days?|fortnights?)";
+
+/**
+ * Extract the loan duration from free text and return it in months.
+ * Handles: "Term: 60 months", "Tenure: 3 years", "14 days",
+ * "4 installments ... every 2 weeks", "12 monthly installments", "for one year".
+ * Returns null if nothing usable is found (never defaults to 0).
+ */
+export function normalizeDuration(text: string): ParsedDuration | null {
+  if (!text) return null;
+
+  // "one year" -> "1 year" (only when followed by a time unit)
+  const t = text.replace(
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b(?=\s*[- ]?\s*(?:year|yr|month|mo|week|day|fortnight))/gi,
+    (w) => NUMBER_WORDS[w.toLowerCase()],
+  );
+
+  // A) "N installments ... every [K] unit"  => N * K * unit
+  const a = t.match(
+    new RegExp(
+      "(\\d+)\\s*(?:equal\\s+|interest[- ]free\\s+|monthly\\s+|bi-?weekly\\s+)*(?:installments?|instalments?|payments?)\\b[\\s\\S]{0,200}?\\bevery\\s+(\\d+)?\\s*(days?|weeks?|fortnights?|months?)",
+      "i",
+    ),
+  );
+  if (a) {
+    const n = parseInt(a[1], 10);
+    const k = a[2] ? parseInt(a[2], 10) : 1;
+    const unit = parseTimeUnit(a[3]);
+    const months = unit ? toMonths(n * k, unit) : null;
+    if (months) return { months, confidence: "high", source: a[0] };
+  }
+
+  // B) "12 monthly installments", "26 fortnightly payments"
+  const b = t.match(/(\d+)\s*(?:equal\s+)?(monthly|weekly|fortnightly|bi-?weekly)\s+(?:installments?|instalments?|payments?)/i);
+  if (b) {
+    const unit = parseTimeUnit(b[2]);
+    const months = unit ? toMonths(parseInt(b[1], 10), unit) : null;
+    if (months) return { months, confidence: "high", source: b[0] };
+  }
+
+  // C) Explicitly labeled: "Term: 60 months", "Tenure of 3 years", "Duration - 14 days"
+  const c = t.match(
+    new RegExp(
+      "(?:loan\\s+term|repayment\\s+period|loan\\s+period|term|tenure|tenor|duration)\\s*(?:of|:|is|-)?\\s*(\\d+(?:\\.\\d+)?)\\s*[- ]?\\s*" + UNIT_RE,
+      "i",
+    ),
+  );
+  if (c) {
+    const unit = parseTimeUnit(c[2]);
+    const months = unit ? toMonths(parseFloat(c[1]), unit) : null;
+    if (months) return { months, confidence: "high", source: c[0] };
+  }
+
+  // D) "for 36 months", "over 5 years" (skips promo phrasing like "for the first 12 months")
+  const d = t.match(new RegExp("\\b(?:for|over|within)\\s+(\\d+(?:\\.\\d+)?)\\s*[- ]?\\s*" + UNIT_RE, "i"));
+  if (d) {
+    const unit = parseTimeUnit(d[2]);
+    const months = unit ? toMonths(parseFloat(d[1]), unit) : null;
+    if (months) return { months, confidence: "low", source: d[0] };
+  }
+
+  return null;
+}
+
+/** "Rs. 5,00,000" / "$1,200.50" / "₹ 25,000" -> number (null if unparseable). */
+export function parseAmount(raw: string): number | null {
+  const cleaned = raw.replace(/[^0-9.]/g, "");
+  if (!cleaned || cleaned === ".") return null;
+  const n = parseFloat(cleaned);
+  return isNum(n) ? n : null;
+}
+
+// ---------------------------------------------------------------------------
+// EMI (reducing balance) and flat-rate loans
+// ---------------------------------------------------------------------------
+
+export interface EMIResult {
+  emi: number;
+  totalPayment: number;
+  totalInterest: number;
+}
+
+// EMI = (P * r * (1+r)^n) / ((1+r)^n - 1), r = annualRate / 12 / 100
+// Returns null on invalid input instead of fake zeros.
+export function calculateEMI(principal: number, annualRate: number, tenureMonths: number): EMIResult | null {
+  if (!isNum(principal) || !isNum(annualRate) || !isNum(tenureMonths)) return null;
+  if (principal <= 0 || tenureMonths <= 0 || annualRate < 0) return null;
+
   if (annualRate === 0) {
-    const emi = principal / tenureMonths;
-    return { emi, totalPayment: principal, totalInterest: 0 };
+    return { emi: principal / tenureMonths, totalPayment: principal, totalInterest: 0 };
   }
 
   const r = annualRate / 12 / 100;
-  const n = tenureMonths;
-  const factor = Math.pow(1 + r, n);
-  const emi = (principal * r * factor) / (factor - 1);
-  const totalPayment = emi * n;
-  const totalInterest = totalPayment - principal;
+  const factor = Math.pow(1 + r, tenureMonths);
+  if (!Number.isFinite(factor) || factor === 1) return null;
 
-  return { emi, totalPayment, totalInterest };
+  const emi = (principal * r * factor) / (factor - 1);
+  const totalPayment = emi * tenureMonths;
+  return { emi, totalPayment, totalInterest: totalPayment - principal };
 }
+
+/**
+ * Flat-rate loan: interest = principal * rate * years, charged on the ORIGINAL principal.
+ * (This is why "1.5% per month flat" is far costlier than it sounds.)
+ */
+export function calculateFlatLoan(principal: number, flatAnnualRate: number, tenureMonths: number): EMIResult | null {
+  if (!isNum(principal) || !isNum(flatAnnualRate) || !isNum(tenureMonths)) return null;
+  if (principal <= 0 || tenureMonths <= 0 || flatAnnualRate < 0) return null;
+
+  const totalInterest = principal * (flatAnnualRate / 100) * (tenureMonths / 12);
+  const totalPayment = principal + totalInterest;
+  return { emi: totalPayment / tenureMonths, totalPayment, totalInterest };
+}
+
+// ---------------------------------------------------------------------------
+// Effective APR (IRR) - the "true cost" engine
+// ---------------------------------------------------------------------------
+
+export interface EffectiveRate {
+  /** Rate per period solving NPV = 0 (decimal, e.g. 0.02 = 2%) */
+  periodicRate: number;
+  /** Nominal APR = periodicRate * periodsPerYear (decimal) */
+  apr: number;
+  /** Effective annual rate with compounding (decimal), null if it overflows */
+  ear: number | null;
+}
+
+/**
+ * Solve for the periodic rate where NPV of the cash flows is zero.
+ * cashFlows[0] = money the borrower actually RECEIVES (positive, after upfront fees),
+ * cashFlows[1..] = payments made (negative).
+ * Returns null if inputs are invalid or the borrower repays less than received.
+ */
+export function calculateEffectiveAPR(cashFlows: number[], periodsPerYear = 12): EffectiveRate | null {
+  if (!Array.isArray(cashFlows) || cashFlows.length < 2) return null;
+  if (!cashFlows.every(isNum) || !isNum(periodsPerYear) || periodsPerYear <= 0) return null;
+  if (cashFlows[0] <= 0) return null;
+
+  const total = cashFlows.reduce((a, b) => a + b, 0);
+  if (total > 0) return null; // pays back less than received: not a loan cost
+  if (total === 0) return { periodicRate: 0, apr: 0, ear: 0 };
+
+  // NPV is increasing in i: negative at i = 0, tends to cashFlows[0] > 0 as i -> infinity.
+  const npv = (i: number) => cashFlows.reduce((s, cf, k) => s + cf / Math.pow(1 + i, k), 0);
+
+  let lo = 0;
+  let hi = 1;
+  let guard = 0;
+  while (npv(hi) < 0 && guard++ < 200) hi *= 2;
+  if (npv(hi) < 0) return null;
+
+  for (let iter = 0; iter < 200; iter++) {
+    const mid = (lo + hi) / 2;
+    if (npv(mid) < 0) lo = mid;
+    else hi = mid;
+  }
+
+  const periodicRate = (lo + hi) / 2;
+  const ear = Math.pow(1 + periodicRate, periodsPerYear) - 1;
+  return {
+    periodicRate,
+    apr: periodicRate * periodsPerYear,
+    ear: Number.isFinite(ear) ? ear : null,
+  };
+}
+
+/**
+ * Short-term / single-repayment loans (payday, cash advance).
+ * netReceived = principal - upfront fees; totalRepay = what you pay back on day `days`.
+ * Returns nominal APR in percent (e.g. 548.9), or null on invalid input.
+ */
+export function calculateShortTermAPR(netReceived: number, totalRepay: number, days: number): number | null {
+  if (!isNum(netReceived) || !isNum(totalRepay) || !isNum(days)) return null;
+  if (netReceived <= 0 || days <= 0 || totalRepay < netReceived) return null;
+  return ((totalRepay - netReceived) / netReceived) * (365 / days) * 100;
+}
+
+// ---------------------------------------------------------------------------
+// Full loan analysis (stated rate vs true cost)
+// ---------------------------------------------------------------------------
+
+export interface LoanInput {
+  principal: number;
+  /** Stated nominal annual rate in percent */
+  annualRate: number;
+  tenureMonths: number;
+  /** "reducing" (default) or "flat" */
+  rateType?: "reducing" | "flat";
+  /** Fees deducted from the loan proceeds (origination, processing, financed insurance...) */
+  upfrontFees?: number;
+  /** Fees added to every monthly payment (mandatory insurance, convenience fees...) */
+  monthlyFees?: number;
+}
+
+export interface LoanAnalysis {
+  emi: number;
+  /** emi + monthly fees */
+  monthlyPayment: number;
+  totalPayment: number;
+  totalInterest: number;
+  totalFees: number;
+  /** principal - upfront fees: the cash the borrower actually gets */
+  netDisbursed: number;
+  /** totalPayment - netDisbursed: the all-in cost of credit */
+  totalCost: number;
+  statedRate: number;
+  /** True annual cost in percent (null if it can't be solved) */
+  effectiveAPR: number | null;
+}
+
+export function analyzeLoan(input: LoanInput): LoanAnalysis | null {
+  const { principal, annualRate, rateType = "reducing" } = input;
+  const upfront = input.upfrontFees ?? 0;
+  const monthly = input.monthlyFees ?? 0;
+
+  if (!isNum(input.tenureMonths) || !isNum(upfront) || !isNum(monthly)) return null;
+  if (upfront < 0 || monthly < 0) return null;
+
+  const n = Math.round(input.tenureMonths);
+  if (n < 1) return null;
+
+  const base = rateType === "flat" ? calculateFlatLoan(principal, annualRate, n) : calculateEMI(principal, annualRate, n);
+  if (!base) return null;
+
+  const netDisbursed = principal - upfront;
+  if (netDisbursed <= 0) return null;
+
+  const monthlyPayment = base.emi + monthly;
+  const totalPayment = monthlyPayment * n;
+  const flows = [netDisbursed, ...Array<number>(n).fill(-monthlyPayment)];
+  const eff = calculateEffectiveAPR(flows, 12);
+
+  return {
+    emi: base.emi,
+    monthlyPayment,
+    totalPayment,
+    totalInterest: base.totalInterest,
+    totalFees: upfront + monthly * n,
+    netDisbursed,
+    totalCost: totalPayment - netDisbursed,
+    statedRate: annualRate,
+    effectiveAPR: eff ? eff.apr * 100 : null,
+  };
+}
+
+/** Compare two scenarios (e.g. paid on time vs. penalty/deferred interest). */
+export function compareScenarios(best: LoanInput, worst: LoanInput) {
+  const a = analyzeLoan(best);
+  const b = analyzeLoan(worst);
+  if (!a || !b) return null;
+  return { best: a, worst: b, extraCost: b.totalCost - a.totalCost };
+}
+
+// ---------------------------------------------------------------------------
+// Revolving credit (credit cards): minimum-payment payoff
+// ---------------------------------------------------------------------------
+
+export interface MinPaymentResult {
+  months: number;
+  totalInterest: number;
+  totalPaid: number;
+  /** true if the payoff hit the safety cap (100 years) */
+  capped: boolean;
+}
+
+/**
+ * Simulates paying only the minimum each month.
+ * Minimum = max(floor, percentOfBalance% of balance + that month's interest).
+ */
+export function minimumPaymentPayoff(
+  balance: number,
+  annualRate: number,
+  opts: { floor?: number; percentOfBalance?: number } = {},
+): MinPaymentResult | null {
+  const floor = opts.floor ?? 25;
+  const pct = opts.percentOfBalance ?? 1;
+  if (!isNum(balance) || !isNum(annualRate) || balance <= 0 || annualRate < 0) return null;
+  if (!isNum(floor) || !isNum(pct) || floor < 0 || pct < 0) return null;
+
+  const r = annualRate / 12 / 100;
+  const MAX_MONTHS = 1200;
+  let bal = balance;
+  let months = 0;
+  let totalInterest = 0;
+  let totalPaid = 0;
+
+  while (bal > 0.005 && months < MAX_MONTHS) {
+    const interest = bal * r;
+    const due = Math.max(floor, (pct / 100) * bal + interest);
+    const payment = Math.min(due, bal + interest);
+    bal = bal + interest - payment;
+    totalInterest += interest;
+    totalPaid += payment;
+    months++;
+  }
+
+  if (months === 0) return null;
+  return { months, totalInterest, totalPaid, capped: bal > 0.005 };
+}
+
+// ---------------------------------------------------------------------------
+// Amortization schedule (reducing balance)
+// ---------------------------------------------------------------------------
 
 export interface AmortizationRow {
   month: number;
@@ -24,16 +371,42 @@ export interface AmortizationRow {
   remainingBalance: number;
 }
 
+export function generateAmortizationSchedule(principal: number, annualRate: number, tenureMonths: number): AmortizationRow[] {
+  if (!isNum(tenureMonths)) return [];
+  const n = Math.round(tenureMonths);
+  const result = calculateEMI(principal, annualRate, n);
+  if (!result) return [];
+
+  const { emi } = result;
+  const r = annualRate / 12 / 100;
+  let balance = principal;
+  const rows: AmortizationRow[] = [];
+
+  for (let month = 1; month <= n; month++) {
+    const interestPaid = balance * r;
+    // Final month clears the balance exactly (avoids floating-point residue)
+    const principalPaid = month === n ? balance : Math.min(emi - interestPaid, balance);
+    balance = Math.max(balance - principalPaid, 0);
+    rows.push({ month, emi, principalPaid, interestPaid, remainingBalance: balance });
+  }
+
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Currency
+// ---------------------------------------------------------------------------
+
 export type SupportedCurrency = "USD" | "INR" | "EUR" | "GBP" | "JPY" | "CAD" | "AUD" | "SGD" | "AED";
 
 const DEFAULT_CURRENCY: SupportedCurrency = "USD";
 
 const CURRENCY_LOCALE: Record<SupportedCurrency, string> = {
   USD: "en-US",
-  INR: "en-IN",
+  INR: "en-IN", // lakh/crore grouping: 5,00,000
   EUR: "en-IE",
   GBP: "en-GB",
-  JPY: "ja-JP",
+  JPY: "en-US", // en-US renders the standard ¥ (ja-JP uses a fullwidth yen sign)
   CAD: "en-CA",
   AUD: "en-AU",
   SGD: "en-SG",
@@ -44,45 +417,47 @@ export function isSupportedCurrency(currency: string): currency is SupportedCurr
   return Object.prototype.hasOwnProperty.call(CURRENCY_LOCALE, currency);
 }
 
-function normalizeCurrency(currency: string | undefined): SupportedCurrency {
-  if (!currency) return DEFAULT_CURRENCY;
-  return isSupportedCurrency(currency) ? currency : DEFAULT_CURRENCY;
+/**
+ * Detect the currency used in a document. Returns null when nothing recognizable is found,
+ * so the caller can ask the user instead of silently assuming USD.
+ * Note: a bare "$" is assumed to be USD unless prefixed (A$, C$, S$).
+ */
+export function detectCurrency(text: string): SupportedCurrency | null {
+  if (!text) return null;
+  if (/₹|\bRs\.?\s*\d|\bINR\b|\brupees?\b/i.test(text)) return "INR";
+  if (/\bA\$|\bAUD\b/.test(text)) return "AUD";
+  if (/\bC\$|\bCAD\b/.test(text)) return "CAD";
+  if (/\bS\$|\bSGD\b/.test(text)) return "SGD";
+  if (/\bAED\b|\bdirhams?\b/i.test(text)) return "AED";
+  if (/€|\bEUR\b/.test(text)) return "EUR";
+  if (/£|\bGBP\b/.test(text)) return "GBP";
+  if (/\bJPY\b|\byen\b/i.test(text)) return "JPY";
+  if (/\$|\bUSD\b/.test(text)) return "USD";
+  return null;
 }
 
-export function generateAmortizationSchedule(principal: number, annualRate: number, tenureMonths: number): AmortizationRow[] {
-  const { emi } = calculateEMI(principal, annualRate, tenureMonths);
-  if (emi === 0) return [];
-
-  const r = annualRate / 12 / 100;
-  let balance = principal;
-  const rows: AmortizationRow[] = [];
-
-  for (let month = 1; month <= tenureMonths; month++) {
-    const interestPaid = balance * r;
-    const principalPaid = Math.min(emi - interestPaid, balance);
-    balance = Math.max(balance - principalPaid, 0);
-    rows.push({ month, emi, principalPaid, interestPaid, remainingBalance: balance });
-  }
-
-  return rows;
-}
-
-export function formatCurrency(amount: number, currency: SupportedCurrency = DEFAULT_CURRENCY): string {
-  const safeCurrency = normalizeCurrency(currency);
-  return new Intl.NumberFormat(CURRENCY_LOCALE[safeCurrency], {
+export function formatCurrency(amount: number | null | undefined, currency: SupportedCurrency = DEFAULT_CURRENCY): string {
+  if (amount === null || amount === undefined || !isNum(amount)) return "N/A";
+  // Unknown currency: show the code instead of the wrong symbol.
+  if (!isSupportedCurrency(currency)) return `${amount.toFixed(2)} ${String(currency)}`;
+  return new Intl.NumberFormat(CURRENCY_LOCALE[currency], {
     style: "currency",
-    currency: safeCurrency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    currency,
   }).format(amount);
 }
 
+export function formatPercent(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || !isNum(value)) return "N/A";
+  if (value > 10000) return ">10,000%";
+  return `${value.toFixed(digits)}%`;
+}
+
 export function getCurrencySymbol(currency: SupportedCurrency = DEFAULT_CURRENCY): string {
-  const safeCurrency = normalizeCurrency(currency);
+  const safe = isSupportedCurrency(currency) ? currency : DEFAULT_CURRENCY;
   return (
-    new Intl.NumberFormat(CURRENCY_LOCALE[safeCurrency], {
+    new Intl.NumberFormat(CURRENCY_LOCALE[safe], {
       style: "currency",
-      currency: safeCurrency,
+      currency: safe,
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     })
@@ -92,8 +467,12 @@ export function getCurrencySymbol(currency: SupportedCurrency = DEFAULT_CURRENCY
 }
 
 export function getCurrencyLocale(currency: SupportedCurrency = DEFAULT_CURRENCY): string {
-  return CURRENCY_LOCALE[normalizeCurrency(currency)];
+  return CURRENCY_LOCALE[isSupportedCurrency(currency) ? currency : DEFAULT_CURRENCY];
 }
+
+// ---------------------------------------------------------------------------
+// Demo data
+// ---------------------------------------------------------------------------
 
 export const DEMO_TEXT = `CREDIT CARD AGREEMENT - PLATINUM REWARDS CARD
 
@@ -121,6 +500,8 @@ Save up to 80% compared to other cards! (compared to our highest rate tier)
 
 Note: Making only the minimum payment will result in paying more in interest and will take longer to pay off the balance. We may change the terms at any time with 45 days notice. Promotional rates may be terminated early if any payment is missed.`;
 
+// Illustrative installment-loan figures used by the demo UI.
+// (A credit card is revolving credit; see minimumPaymentPayoff for the more honest model.)
 export const DEMO_LOAN = {
   amount: 25000,
   rate: 24.99,

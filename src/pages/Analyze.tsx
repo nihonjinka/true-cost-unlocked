@@ -3,186 +3,85 @@ import { motion } from "framer-motion";
 import { Shield, ArrowLeft, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AnalysisInput } from "@/components/AnalysisInput";
-import { AnalysisDashboard, AnalysisResult } from "@/components/AnalysisDashboard";
-import { LoadingSpinner } from "@/components/LoadingSpinner";
+import { AnalysisDashboard } from "@/components/AnalysisDashboard";
 import { WorstCaseSimulator } from "@/components/WorstCaseSimulator";
 import { AmortizationTable } from "@/components/AmortizationTable";
 import { DeceptionDetector } from "@/components/DeceptionDetector";
 import { SmartAdvice } from "@/components/SmartAdvice";
-import CounterOfferEmail from "@/components/CounterOfferEmail";
 import { LoanComparison } from "@/components/LoanComparison";
 import { SavingsCalculator } from "@/components/SavingsCalculator";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { analyzeLocally, extractValuesFromText, type ExtractedValues } from "@/lib/analyzeLocally";
-import { enhanceAnalysisWithAI, isAIEnhancementConfigured } from "@/lib/analyzeWithAI";
-import type { DeceptionResult } from "@/components/DeceptionDetector";
-import type { AdviceResult } from "@/components/SmartAdvice";
-
-interface ExtendedResult extends AnalysisResult {
-  deception: DeceptionResult;
-  advice: AdviceResult;
-}
+import { analyzeLocally } from "@/lib/analyzeLocally";
+import type { AnalysisContext } from "@/lib/analysisContext";
+import type { SupportedCurrency } from "@/lib/financial";
 
 export default function Analyze() {
-  const aiConfigured = isAIEnhancementConfigured();
   const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<ExtendedResult | null>(null);
-  const [loanParams, setLoanParams] = useState({ amount: 0, rate: 0, duration: 0 });
-  const [extractedValues, setExtractedValues] = useState<ExtractedValues | null>(null);
-  const [extractionWarning, setExtractionWarning] = useState<string | null>(null);
-  const [aiNotice, setAiNotice] = useState<string | null>(null);
+  const [result, setResult] = useState<AnalysisContext | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const handleAnalyze = async (text: string, amount: number, rate: number, duration: number, manualCurrency: SupportedCurrency) => {
+  const handleAnalyze = (text: string, amount: number | null, rate: number | null, duration: number | null, currency: SupportedCurrency | null) => {
     setIsLoading(true);
-    setResult(null);
-    setExtractionWarning(null);
-    setAiNotice(null);
-
-    await new Promise((r) => setTimeout(r, 1500));
-
+    setAnalysisError(null);
     try {
-      // Step 1: Extract values from text if not manually provided
-      const extracted = extractValuesFromText(text);
-      const finalAmount = amount || extracted.loanAmount || 0;
-      const finalRate = rate || extracted.interestRate || 0;
-      const finalDuration = duration || extracted.tenureMonths || 0;
-
-      // Update extracted values for auto-fill display
-      setExtractedValues(extracted);
-
-      // Show warning if we couldn't extract key financial values and user didn't provide them
-      const missingFields: string[] = [];
-      if (finalAmount === 0) missingFields.push("loan amount");
-      if (finalRate === 0) missingFields.push("interest rate");
-      if (finalDuration === 0) missingFields.push("duration");
-
-      if (missingFields.length > 0) {
-        setExtractionWarning(
-          `Unable to extract: ${missingFields.join(", ")}. EMI calculations may be incomplete. You can enter values manually above.`
-        );
-      }
-
-      setLoanParams({ amount: finalAmount, rate: finalRate, duration: finalDuration });
-      const analysis = analyzeLocally(text, finalAmount, finalRate, finalDuration, manualCurrency);
-
-      if (!aiConfigured) {
-        setAiNotice("AI enhancement is disabled (missing VITE_OPENROUTER_API_KEY). Using deterministic local analysis mode.");
-        setResult(analysis);
-        return;
-      }
-
-      try {
-        const enhanced = await enhanceAnalysisWithAI(text, analysis);
-        setResult(enhanced);
-      } catch (aiError) {
-        console.error("AI enhancement failed, using local analysis:", aiError);
-        setAiNotice("AI enhancement failed. Falling back to deterministic local analysis mode.");
-        setResult(analysis);
-      }
-    } catch (err) {
-      console.error("Analysis failed:", err);
+      const analysis = analyzeLocally(text, amount, rate, duration, currency);
+      setResult(analysis);
+    } catch (error) {
+      console.error("Analysis failed:", error);
+      setAnalysisError(error instanceof Error ? error.message : "The document could not be analyzed.");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const hasFinancials = loanParams.amount > 0 && loanParams.rate > 0 && loanParams.duration > 0;
+  const selectPrincipal = (amount: number) => {
+    if (!result) return;
+    const rateOverride = result.rateField.source === "User override" ? result.rateField.value : null;
+    const durationOverride = result.termField.source === "User override" ? result.termField.value : null;
+    const next = analyzeLocally(result.rawText, amount, rateOverride, durationOverride, result.currency);
+    setResult(next);
+  };
 
   return (
     <div className="page-enter min-h-screen bg-background grid-bg scanline">
       <div className="max-w-5xl mx-auto px-4 py-8">
-        <motion.header
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-center justify-between mb-10"
-        >
+        <motion.header initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between mb-10">
           <div className="flex items-center gap-4">
-            <Link
-              to="/"
-              className="interactive-button flex items-center gap-2 font-mono text-[11px] tracking-widest uppercase text-muted-foreground hover:text-primary transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              BACK
+            <Link to="/" className="interactive-button flex items-center gap-2 font-mono text-[11px] tracking-widest uppercase text-muted-foreground hover:text-primary transition-colors">
+              <ArrowLeft className="w-4 h-4" /> BACK
             </Link>
             <div className="h-4 w-px bg-border" />
-            <div className="flex items-center gap-3">
-              <Shield className="w-5 h-5 text-primary" />
+            <div className="flex items-center gap-3"><Shield className="w-5 h-5 text-primary" />
               <span className="font-display text-lg font-bold text-foreground">TRUE COST</span>
               <span className="font-mono text-[10px] text-primary/60 border border-primary/20 px-2 py-0.5">ANALYZER</span>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <ThemeToggle />
-            <div className="flex items-center gap-2">
-              <span className="status-dot animate-pulse-dot" />
-              <span className="font-mono text-[10px] text-muted-foreground tracking-widest">ENGINE ACTIVE</span>
-            </div>
-          </div>
+          <div className="flex items-center gap-4"><ThemeToggle /><div className="flex items-center gap-2">
+            <span className="status-dot animate-pulse-dot" /><span className="font-mono text-[10px] text-muted-foreground tracking-widest">ENGINE ACTIVE</span>
+          </div></div>
         </motion.header>
 
-        <AnalysisInput
-          onAnalyze={handleAnalyze}
-          isLoading={isLoading}
-          extractedValues={extractedValues}
-        />
-
+        <AnalysisInput onAnalyze={handleAnalyze} isLoading={isLoading} />
         <div className="mt-8 space-y-4">
-          {isLoading && <LoadingSpinner />}
-
-          {extractionWarning && !isLoading && result && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex items-start gap-3 px-4 py-3 border border-yellow-500/30 bg-yellow-500/5"
-            >
-              <AlertCircle className="w-4 h-4 text-yellow-500 mt-0.5 flex-shrink-0" />
-              <p className="font-mono text-xs text-yellow-500">{extractionWarning}</p>
-            </motion.div>
-          )}
-
-          {aiNotice && !isLoading && result && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex items-start gap-3 px-4 py-3 border border-primary/30 bg-primary/5"
-            >
-              <AlertCircle className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
-              <p className="font-mono text-xs text-primary">{aiNotice}</p>
-            </motion.div>
-          )}
-
+          {analysisError && <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            className="flex items-start gap-3 px-4 py-3 border border-destructive/30 bg-destructive/5">
+            <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" /><p className="font-mono text-xs text-destructive">{analysisError}</p>
+          </motion.div>}
           {result && !isLoading && (
             <>
-              <AnalysisDashboard result={result} />
-              <DeceptionDetector deception={result.deception} />
-              <CounterOfferEmail initialEmail={result.counterOfferEmail} rawText={result.rawText} />
-              <SmartAdvice advice={result.advice} />
-              {hasFinancials && (
+              <AnalysisDashboard context={result} onPrincipalSelect={selectPrincipal} />
+              <DeceptionDetector context={result} />
+              <SmartAdvice context={result} />
+              {result.financialMetricsAvailable && (
                 <>
-                  <WorstCaseSimulator
-                    principal={result.principal}
-                    emi={result.emi}
-                    totalPayment={result.totalPayment}
-                    totalInterest={result.totalInterest}
-                    durationMonths={loanParams.duration}
-                    currencyCode={result.currencyCode}
-                  />
-                  <AmortizationTable
-                    principal={result.principal}
-                    annualRate={loanParams.rate}
-                    tenureMonths={loanParams.duration}
-                    currencyCode={result.currencyCode}
-                  />
-                  <SavingsCalculator
-                    principal={result.principal}
-                    annualRate={loanParams.rate}
-                    tenureMonths={loanParams.duration}
-                    totalInterest={result.totalInterest}
-                    currencyCode={result.currencyCode}
-                  />
+                  <AmortizationTable key={result.rawText + String(result.principal)} context={result} />
+                  {result.rateField.rateType === "reducing" && <>
+                    <WorstCaseSimulator key={result.rawText + String(result.principal)} context={result} />
+                    <SavingsCalculator key={result.rawText + String(result.principal)} context={result} />
+                    <LoanComparison key={result.rawText + String(result.principal)} context={result} />
+                  </>}
                 </>
               )}
-              <LoanComparison />
             </>
           )}
         </div>

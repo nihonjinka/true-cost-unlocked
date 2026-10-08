@@ -2,16 +2,19 @@ import { motion } from "framer-motion";
 
 interface Props {
   score: number;
+  band?: "low" | "medium" | "high" | "insufficient_confidence";
 }
 
-export function RiskMeter({ score }: Props) {
+export function RiskMeter({ score, band }: Props) {
   const getColor = () => {
+    if (band === "insufficient_confidence") return "hsl(var(--muted-foreground))";
     if (score < 30) return "hsl(68, 100%, 45%)";
     if (score < 60) return "hsl(45, 93%, 50%)";
     return "hsl(0, 72%, 55%)";
   };
 
   const getLabel = () => {
+    if (band === "insufficient_confidence") return "INSUFFICIENT CONFIDENCE";
     if (score < 30) return "LOW RISK";
     if (score < 60) return "MEDIUM RISK";
     return "HIGH RISK";

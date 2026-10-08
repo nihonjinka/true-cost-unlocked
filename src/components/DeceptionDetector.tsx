@@ -1,17 +1,13 @@
 import { motion } from "framer-motion";
 import { Eye, AlertTriangle } from "lucide-react";
-
-export interface DeceptionResult {
-  urgencyTactics: string[];
-  fakeDiscounts: string[];
-  emotionalManipulation: string[];
-}
+import type { AnalysisContext } from "@/lib/analysisContext";
 
 interface Props {
-  deception: DeceptionResult;
+  context: AnalysisContext;
 }
 
-export function DeceptionDetector({ deception }: Props) {
+export function DeceptionDetector({ context }: Props) {
+  const { deception } = context;
   const totalFlags = deception.urgencyTactics.length + deception.fakeDiscounts.length + deception.emotionalManipulation.length;
   if (totalFlags === 0) return null;
 

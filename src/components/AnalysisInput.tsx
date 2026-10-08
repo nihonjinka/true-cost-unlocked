@@ -1,48 +1,32 @@
-import { useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { FileText, Sparkles, Play, RotateCcw, Cpu } from "lucide-react";
-import { DEMO_TEXT, DEMO_LOAN, type SupportedCurrency } from "@/lib/financial";
+import { DEMO_TEXT, detectCurrency, type SupportedCurrency } from "@/lib/financial";
+import { extractValuesFromText } from "@/lib/analyzeLocally";
 
 interface AnalysisInputProps {
-  onAnalyze: (text: string, amount: number, rate: number, duration: number, currency: SupportedCurrency) => void;
+  onAnalyze: (text: string, amount: number | null, rate: number | null, duration: number | null, currency: SupportedCurrency | null) => void;
   isLoading: boolean;
-  extractedValues?: { loanAmount: number | null; interestRate: number | null; tenureMonths: number | null } | null;
 }
 
-export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: AnalysisInputProps) {
+export function AnalysisInput({ onAnalyze, isLoading }: AnalysisInputProps) {
   const [text, setText] = useState("");
   const [amount, setAmount] = useState<number | "">("");
   const [rate, setRate] = useState<number | "">("");
   const [duration, setDuration] = useState<number | "">("");
-  const [currency, setCurrency] = useState<SupportedCurrency>("USD");
-  const [autoFilled, setAutoFilled] = useState(false);
-
-  // Auto-fill fields when extracted values arrive
-  useEffect(() => {
-    if (extractedValues) {
-      let filled = false;
-      if (extractedValues.loanAmount !== null && !amount) {
-        setAmount(extractedValues.loanAmount);
-        filled = true;
-      }
-      if (extractedValues.interestRate !== null && !rate) {
-        setRate(extractedValues.interestRate);
-        filled = true;
-      }
-      if (extractedValues.tenureMonths !== null && !duration) {
-        setDuration(extractedValues.tenureMonths);
-        filled = true;
-      }
-      if (filled) setAutoFilled(true);
-    }
-  }, [extractedValues]);
+  const [currencyOverride, setCurrencyOverride] = useState<SupportedCurrency | null>(null);
+  const extractedValues = useMemo(() => extractValuesFromText(text), [text]);
+  const detectedCurrency = useMemo(() => detectCurrency(text), [text]);
+  const autoFilled = (amount === "" && extractedValues.loanAmount !== null)
+    || (rate === "" && extractedValues.interestRate !== null)
+    || (duration === "" && extractedValues.tenureMonths !== null);
 
   const loadDemo = () => {
     setText(DEMO_TEXT);
-    setAmount(DEMO_LOAN.amount);
-    setRate(DEMO_LOAN.rate);
-    setDuration(DEMO_LOAN.duration);
-    setAutoFilled(false);
+    setAmount("");
+    setRate("");
+    setDuration("");
+    setCurrencyOverride(null);
   };
 
   const reset = () => {
@@ -50,7 +34,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
     setAmount("");
     setRate("");
     setDuration("");
-    setAutoFilled(false);
+    setCurrencyOverride(null);
   };
 
   // Only require text — fields are optional
@@ -75,7 +59,13 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           </label>
           <textarea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              setAmount("");
+              setRate("");
+              setDuration("");
+              setCurrencyOverride(null);
+            }}
             rows={6}
             placeholder="Paste loan agreement, credit card terms, BNPL contract... Values will be auto-extracted."
             className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 resize-none transition-colors"
@@ -99,10 +89,11 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
             <div>
               <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">Currency</label>
               <select
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value as SupportedCurrency)}
+                value={currencyOverride ?? "AUTO"}
+                onChange={(e) => setCurrencyOverride(e.target.value === "AUTO" ? null : e.target.value as SupportedCurrency)}
                 className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground focus:outline-none focus:border-primary/40 transition-colors appearance-none"
               >
+                <option value="AUTO">AUTO ({detectedCurrency ?? "USD fallback"})</option>
                 <option value="USD">USD ($)</option>
                 <option value="INR">INR (₹ / Rs)</option>
                 <option value="EUR">EUR (€)</option>
@@ -115,9 +106,9 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
               </select>
             </div>
             {[
-              { label: "Loan Amount", value: amount, set: (v: number | "") => { setAmount(v); setAutoFilled(false); }, ph: "Auto-extract" },
-              { label: "Interest Rate (%)", value: rate, set: (v: number | "") => { setRate(v); setAutoFilled(false); }, ph: "Auto-extract" },
-              { label: "Duration (months)", value: duration, set: (v: number | "") => { setDuration(v); setAutoFilled(false); }, ph: "Auto-extract" },
+              { label: "Loan Amount", value: amount === "" ? extractedValues.loanAmount ?? "" : amount, set: setAmount, ph: "Auto-extract" },
+              { label: extractedValues?.interestRateIsConditional ? "Conditional Deferred APR (%)" : "Interest Rate (%)", value: rate === "" ? extractedValues.interestRate ?? "" : rate, set: setRate, ph: "Auto-extract" },
+              { label: "Duration (months)", value: duration === "" ? extractedValues.tenureMonths ?? "" : duration, set: setDuration, ph: "Auto-extract" },
             ].map((field) => (
               <div key={field.label}>
                 <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
@@ -140,7 +131,7 @@ export function AnalysisInput({ onAnalyze, isLoading, extractedValues }: Analysi
           <motion.button
             whileTap={{ scale: 0.97 }}
             disabled={!canAnalyze || isLoading}
-            onClick={() => onAnalyze(text, Number(amount) || 0, Number(rate) || 0, Number(duration) || 0, currency)}
+            onClick={() => onAnalyze(text, amount === "" ? null : amount, rate === "" ? null : rate, duration === "" ? null : duration, currencyOverride)}
             className="interactive-button flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-mono text-[11px] tracking-widest uppercase disabled:opacity-40 disabled:cursor-not-allowed transition-all terminal-glow"
           >
             <Play className="w-4 h-4" />
