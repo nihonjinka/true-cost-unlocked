@@ -20,7 +20,8 @@ export function RiskMeter({ score, band }: Props) {
     return "HIGH RISK";
   };
 
-  const rotation = (score / 100) * 180 - 90;
+  const clampedScore = Math.min(Math.max(score, 0), 100);
+  const rotation = (clampedScore / 100) * 180 - 90;
 
   return (
     <div className="flex flex-col items-center gap-3">

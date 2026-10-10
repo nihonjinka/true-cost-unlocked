@@ -1,8 +1,28 @@
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
+import React, { useState } from "react";
 
 export function HeroSection() {
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [tilt, setTilt] = useState({ x: 0, y: 0 });
+  const [isHovering, setIsHovering] = useState(false);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setMousePosition({ x, y });
+
+    const xPct = (x / rect.width - 0.5) * 2;
+    const yPct = (y / rect.height - 0.5) * 2;
+    
+    const rotateY = xPct * 10; 
+    const rotateX = yPct * 10;
+
+    setTilt({ x: rotateX, y: rotateY });
+  };
+
   return (
     <section className="relative px-4 sm:px-8 pt-12 pb-16 lg:pb-24">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
@@ -70,8 +90,36 @@ export function HeroSection() {
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.4, duration: 0.6 }}
-          className="terminal-card terminal-glow"
         >
+          <div
+            className="terminal-card terminal-glow group relative overflow-hidden h-full"
+            style={{ 
+              transform: isHovering 
+                ? `perspective(1000px) scale(0.96) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)` 
+                : 'perspective(1000px) scale(1) rotateX(0deg) rotateY(0deg)',
+              transition: isHovering ? 'transform 0.1s ease-out' : 'transform 0.5s ease-out',
+              transformStyle: 'preserve-3d'
+            }}
+            onMouseMove={handleMouseMove}
+            onMouseEnter={() => setIsHovering(true)}
+            onMouseLeave={() => {
+              setIsHovering(false);
+              setTilt({ x: 0, y: 0 });
+            }}
+          >
+          {/* Spotlight border effect */}
+          {isHovering && (
+            <div
+              className="pointer-events-none absolute inset-0 z-50 rounded-[inherit] transition-opacity duration-300"
+              style={{
+                background: `radial-gradient(350px circle at ${mousePosition.x}px ${mousePosition.y}px, hsl(68 100% 45% / 0.9), transparent 40%)`,
+                WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+                WebkitMaskComposite: "xor",
+                maskComposite: "exclude",
+                padding: "2px",
+              }}
+            />
+          )}
           {/* Terminal header */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-border">
             <div className="flex items-center gap-3">
@@ -168,6 +216,7 @@ export function HeroSection() {
                   </span>
                 </div>
               ))}
+            </div>
             </div>
           </div>
         </motion.div>

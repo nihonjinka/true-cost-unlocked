@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { Mail, BookOpen, AlertTriangle, Globe } from "lucide-react";
+import React, { useState } from "react";
 
 const features = [
   {
@@ -28,6 +29,47 @@ const features = [
   },
 ];
 
+function FeatureCard({ mod, i }: { mod: any; i: number }) {
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [isHovering, setIsHovering] = useState(false);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true }}
+      transition={{ delay: i * 0.1 }}
+      className="bg-background p-8 group relative overflow-hidden"
+      onMouseMove={handleMouseMove}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
+    >
+      {/* Decorative spotlight on hover */}
+      <div 
+        className="pointer-events-none absolute inset-0 transition-opacity duration-300"
+        style={{
+          opacity: isHovering ? 1 : 0,
+          background: `radial-gradient(400px circle at ${mousePos.x}px ${mousePos.y}px, hsl(68 100% 45% / 0.3), transparent 40%)`
+        }}
+      />
+      
+      <span className="font-mono text-[10px] tracking-widest text-primary/60 mb-6 block relative z-10">{mod.id}</span>
+      <div className="flex items-start gap-4 relative z-10">
+        <mod.icon className="w-6 h-6 text-primary flex-shrink-0 mt-1" strokeWidth={1.5} />
+        <div>
+          <h3 className="font-display text-lg font-bold text-foreground mb-2">{mod.title}</h3>
+          <p className="font-mono text-sm text-muted-foreground leading-relaxed">{mod.desc}</p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 export function AIFeaturesSection() {
   return (
     <section id="ai-features" className="px-4 sm:px-8 py-20 bg-background/50 relative border-t border-b border-border/50">
@@ -47,33 +89,11 @@ export function AIFeaturesSection() {
             NEW
           </span>
         </div>
-        <p className="font-mono text-[11px] tracking-widest text-primary uppercase">
-          POWERED BY GPT-4O-MINI
-        </p>
       </motion.div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-border relative z-10">
         {features.map((mod, i) => (
-          <motion.div
-            key={mod.id}
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ delay: i * 0.1 }}
-            className="bg-background p-8 group hover:bg-primary/5 transition-colors relative overflow-hidden"
-          >
-            {/* Decorative gradient on hover */}
-            <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
-            
-            <span className="font-mono text-[10px] tracking-widest text-primary/60 mb-6 block">{mod.id}</span>
-            <div className="flex items-start gap-4">
-              <mod.icon className="w-6 h-6 text-primary flex-shrink-0 mt-1" strokeWidth={1.5} />
-              <div>
-                <h3 className="font-display text-lg font-bold text-foreground mb-2">{mod.title}</h3>
-                <p className="font-mono text-sm text-muted-foreground leading-relaxed">{mod.desc}</p>
-              </div>
-            </div>
-          </motion.div>
+          <FeatureCard key={mod.id} mod={mod} i={i} />
         ))}
       </div>
     </section>

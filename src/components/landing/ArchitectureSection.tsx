@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { FileSearch, Shield, Calculator, Brain } from "lucide-react";
+import React, { useState } from "react";
 
 const modules = [
   {
@@ -29,6 +30,52 @@ const modules = [
   },
 ];
 
+function ModuleCard({ mod, i }: { mod: any; i: number }) {
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [isHovering, setIsHovering] = useState(false);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true }}
+      transition={{ delay: i * 0.1 }}
+      className="bg-background p-8 group relative overflow-hidden transition-colors hover:bg-card/50"
+      onMouseMove={handleMouseMove}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
+    >
+      {/* Decorative spotlight on hover */}
+      <div 
+        className="pointer-events-none absolute inset-0 transition-opacity duration-300"
+        style={{
+          opacity: isHovering ? 1 : 0,
+          background: `radial-gradient(400px circle at ${mousePos.x}px ${mousePos.y}px, hsl(68 100% 45% / 0.3), transparent 40%)`
+        }}
+      />
+      <span className="font-mono text-[10px] tracking-widest text-primary/60 mb-6 block relative z-10">{mod.id}</span>
+      {mod.hasApiTag && (
+        <div className="absolute top-6 right-6 font-mono text-[10px] text-muted-foreground space-y-1 z-10">
+          <div className="text-primary/60">AI MODE: OPTIONAL</div>
+          <div className="text-primary/40">LOCAL FALLBACK: ENABLED</div>
+        </div>
+      )}
+      <div className="flex items-start gap-4 relative z-10">
+        <mod.icon className="w-6 h-6 text-primary flex-shrink-0 mt-1" strokeWidth={1.5} />
+        <div>
+          <h3 className="font-display text-lg font-bold text-foreground mb-2">{mod.title}</h3>
+          <p className="font-mono text-sm text-muted-foreground leading-relaxed">{mod.desc}</p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 export function ArchitectureSection() {
   return (
     <section id="architecture" className="px-4 sm:px-8 py-20">
@@ -48,29 +95,7 @@ export function ArchitectureSection() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-border">
         {modules.map((mod, i) => (
-          <motion.div
-            key={mod.id}
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ delay: i * 0.1 }}
-            className="bg-background p-8 group hover:bg-card transition-colors relative"
-          >
-            <span className="font-mono text-[10px] tracking-widest text-primary/60 mb-6 block">{mod.id}</span>
-            {mod.hasApiTag && (
-              <div className="absolute top-6 right-6 font-mono text-[10px] text-muted-foreground space-y-1">
-                <div className="text-primary/60">AI MODE: OPTIONAL</div>
-                <div className="text-primary/40">LOCAL FALLBACK: ENABLED</div>
-              </div>
-            )}
-            <div className="flex items-start gap-4">
-              <mod.icon className="w-6 h-6 text-primary flex-shrink-0 mt-1" strokeWidth={1.5} />
-              <div>
-                <h3 className="font-display text-lg font-bold text-foreground mb-2">{mod.title}</h3>
-                <p className="font-mono text-sm text-muted-foreground leading-relaxed">{mod.desc}</p>
-              </div>
-            </div>
-          </motion.div>
+          <ModuleCard key={mod.id} mod={mod} i={i} />
         ))}
       </div>
     </section>
