@@ -27,7 +27,7 @@ const tiers = [
     price: "Custom",
     features: ["Full API Access", "Custom Integrations", "Bulk Processing", "On-premise Deployment"],
     cta: "Contact Us",
-    ctaLink: "#",
+    ctaLink: "/contact",
     highlight: false,
   },
 ];
