@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { FileText, Sparkles, Play, RotateCcw, Cpu, Upload, LoaderCircle, AlertCircle } from "lucide-react";
 import { DEMO_TEXT, detectCurrency, type SupportedCurrency } from "@/lib/financial";
-import { extractValuesFromText } from "@/lib/analyzeLocally";
+import { useDocumentExtraction } from "@/hooks/useDocumentExtraction";
 import { documentImportLimits, importDocument, type DocumentImportProgress, type DocumentImportResult } from "@/lib/documentImport";
 import rules from "@/data/analysisRules.json";
 
@@ -15,7 +15,6 @@ interface AnalysisInputProps {
 
 export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInputChange }: AnalysisInputProps) {
   const [text, setText] = useState("");
-  const [extractionText, setExtractionText] = useState("");
   const [amount, setAmount] = useState<string | null>(null);
   const [rate, setRate] = useState<string | null>(null);
   const [duration, setDuration] = useState<string | null>(null);
@@ -29,14 +28,8 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
   const textInput = useRef<HTMLTextAreaElement>(null);
   const importVersion = useRef(0);
   const importRequest = useRef<AbortController | null>(null);
-  useEffect(() => {
-    const delay = (rules as unknown as { inputExtractionDebounceMs?: number }).inputExtractionDebounceMs ?? 180;
-    const timer = setTimeout(() => setExtractionText(text), delay);
-    return () => clearTimeout(timer);
-  }, [text]);
   useEffect(() => () => { importVersion.current += 1; importRequest.current?.abort(); }, []);
-  const extractedValues = useMemo(() => extractValuesFromText(extractionText), [extractionText]);
-  const extracting = extractionText !== text;
+  const { extractedValues, extracting, error: extractionError } = useDocumentExtraction(text, rules.inputExtractionDebounceMs ?? 180);
   const detectedCurrency = useMemo(() => detectCurrency(text), [text]);
   const autoFilled = !extracting && ((amount === null && extractedValues.loanAmount !== null && !extractedValues.principalField.needsReview)
     || (rate === null && extractedValues.interestRate !== null && !extractedValues.rateField.needsReview)
@@ -167,6 +160,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
             )}
             {extracting && <span role="status" className="font-mono text-[9px] text-muted-foreground ml-auto">Updating extracted fields…</span>}
           </div>
+          {extractionError && <p role="status" className="mb-2 font-mono text-xs text-destructive">{extractionError} You can enter overrides or analyze the document for AI assistance.</p>}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div>
               <label htmlFor="agreement-currency" className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">Currency</label>

@@ -1,4 +1,4 @@
-import config from "@/data/scheduleRules.json";
+import { scheduleRules as config } from "./validatedConfig";
 import type { CostFinding, InstallmentSchedule } from "./analysisContext";
 import { calculateEffectiveAPR, calculateEMI, parseAmount, type AmortizationRow } from "./financial";
 

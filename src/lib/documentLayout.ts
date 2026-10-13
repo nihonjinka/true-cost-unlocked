@@ -48,9 +48,10 @@ export function joinDocumentFragments(fragments: DocumentFragment[], page: numbe
     let row = rows.find((candidate) => {
       const anchor = candidate[0];
       const tolerance = Math.max(rules.layout.minimumRowTolerance, Math.min(anchor.height, fragment.height) * rules.layout.rowTolerance);
+      const baselineTolerance = Math.max(rules.layout.minimumRowTolerance, Math.max(anchor.height, fragment.height) * rules.layout.rowTolerance);
       // Punctuation/dot leaders have short boxes near the baseline, not the top of the row.
       return Math.abs(anchor.y - fragment.y) <= tolerance
-        || Math.abs(anchor.y + anchor.height - fragment.y - fragment.height) <= tolerance;
+        || Math.abs(anchor.y + anchor.height - fragment.y - fragment.height) <= baselineTolerance;
     });
     if (!row) { row = []; rows.push(row); }
     row.push(fragment);

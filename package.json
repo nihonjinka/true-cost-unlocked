@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.evaluation.json",
     "preview": "vite preview",
     "test": "vitest run",
     "evaluate": "vitest run src/test/evaluationHarness.test.ts --reporter=verbose",

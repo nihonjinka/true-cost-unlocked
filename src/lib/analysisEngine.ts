@@ -1,5 +1,4 @@
-import rules from "@/data/analysisRules.json";
-import extractionRules from "@/data/extractionRules.json";
+import { analysisRules as rules, extractionRules } from "./validatedConfig";
 import { calculateEMI, normalizeDuration, parseAmount, parseTimeUnit, toAnnualRate, type ParsedDuration, type TimeUnit } from "./financial";
 import type { AnalysisFinding, AmountRelationship, CostFinding, DetectedClaim, DocumentType, ExtractedCandidate, ExtractedField, FindingPolarity, LineItemGroup, RiskBand, RiskBreakdownItem } from "./analysisContext";
 import { riskBandForScore, scoreRiskFindings } from "./riskScoring";

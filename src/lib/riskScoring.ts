@@ -1,4 +1,4 @@
-import rules from "@/data/analysisRules.json";
+import { analysisRules as rules } from "./validatedConfig";
 import type { CostFinding, RiskBand, RiskBreakdownItem } from "./analysisContext";
 
 export type { RiskBand } from "./analysisContext";

@@ -1,7 +1,7 @@
 import { analyzeLoan, calculateEffectiveAPR, calculateEMI, calculateFlatLoan, calculateShortTermAPR, detectCurrency, formatCurrency, minimumPaymentPayoff, type SupportedCurrency } from "./financial";
 import { calculateRisk, canonicalFinding, classifyDocument, classifyPolarity, collectRuleFindings, computeTaxImpacts, detectClaims, detectClaimsGeneric, detectCosts, detectCostsGeneric, extractAmountCandidates, extractRateCandidates, extractRateType, extractStatedEMI, mergeClauseFindings, parseMonetaryValues, resolveDerivedAmountCandidates, scorePrincipalCandidates, segmentClauses, type ParsedRateCandidate } from "./analysisEngine";
 import { freezeAnalysisContext, type AdviceResult, type AddOnImpact, type AlternativeFunding, type AnalysisContext, type AnalysisFinding, type AIExtractedFields, type AmountRelationship, type CashPriceAnalysis, type CostBreakdown, type CostFinding, type DeceptionResult, type ExtractedField, type FairMarketBenchmark, type GlossaryItem, type InstallmentSchedule, type ReconciliationCheck } from "./analysisContext";
-import rules from "@/data/analysisRules.json";
+import { analysisRules as rules } from "./validatedConfig";
 import { normalizeDocument } from "./documentNormalization";
 import { inspectLegalStructure, resolveLegalReference } from "./documentStructure";
 import { classifyPeriodRoles, selectLoanTerm, type PeriodCandidate } from "./periodRoles";
@@ -568,7 +568,8 @@ export function generateLocalGlossary(input: string | CostFinding[]): GlossaryIt
     const item = rules.categoryGlossary.find((entry) => entry.category === category);
     if (item) glossary.push({ term: item.term, definition: item.definition });
   }
-  if (findings.some((finding) => finding.category === "protection")) glossary.push({ term: "Consumer protections", definition: "Documented exclusions, waivers, fixed rates, and cancellation windows limit the specified charges or obligations under their stated conditions." });
+  const protectionGlossary = rules.categoryGlossary.find((entry) => entry.category === "protection");
+  if (protectionGlossary && findings.some((finding) => finding.category === "protection")) glossary.push({ term: protectionGlossary.term, definition: protectionGlossary.definition });
   return glossary;
 }
 

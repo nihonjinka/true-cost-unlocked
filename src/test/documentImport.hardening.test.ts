@@ -26,10 +26,10 @@ describe("document layout and OCR decisions", () => {
     result.spans.forEach((span, index) => expect(result.text.slice(span.start - 10, span.end - 10)).toBe(rows[index].text));
     expect(result.spans.every((span) => span.page === 3)).toBe(true);
   });
-  it("keeps small punctuation and dot leaders on their text baseline", () => {
+  it.each([31, 34, 36])("keeps small punctuation and dot leaders at baseline %i with their text", (baseline) => {
     const result = joinDocumentFragments([
       fragment("Processing fee", 20, 20, 130),
-      { ...fragment("........", 160, 31, 60), height: 2 },
+      { ...fragment("........", 160, baseline, 60), height: 2 },
       fragment("4%", 240, 20, 40),
     ], 1, 0, 600);
     expect(result.text).toBe("Processing fee\t........\t4%");
