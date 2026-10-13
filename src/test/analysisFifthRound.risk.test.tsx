@@ -59,7 +59,7 @@ describe("Round 5 noisy-OR risk scoring", () => {
     const duplicate = finding(1, 4, { id: "other_catalog_match", label: "Another match" });
     const floor = finding(1, 1, { id: "floor_match", minimumRiskBand: "critical" });
     const result = scoreRiskFindings([finding(1, 2), duplicate, floor], settings);
-    expect(result.breakdown).toHaveLength(1);
+    expect(result.breakdown.filter((entry) => entry.category !== "severity_floor")).toHaveLength(1);
     expect(result.breakdown[0].weight).toBe(0.55);
     expect(result.combinedScore).toBeCloseTo(55);
     expect(result.score).toBe(70);
@@ -89,7 +89,20 @@ describe("Round 5 noisy-OR risk scoring", () => {
     const result = scoreRiskFindings([merged], settings);
     expect(result.score).toBe(70);
     expect(result.band).toBe("critical");
-    expect(result.breakdown).toHaveLength(1);
+    expect(result.breakdown.filter((entry) => entry.category !== "severity_floor")).toHaveLength(1);
+  });
+
+  it("keeps a configured severity floor after protection credits", () => {
+    const floored = { ...finding(1, 1), minimumRiskBand: "critical" as const };
+    const protections = Array.from({ length: 30 }, (_, index) => ({
+      ...finding(index + 2, 0), category: "protection", polarity: "negated" as const,
+    }));
+    const result = scoreRiskFindings([floored, ...protections], { ...settings, protectionDeductionWeight: 0.04 });
+    expect(result.score).toBe(70);
+    expect(result.band).toBe("critical");
+    expect(result.breakdown.some((entry) => entry.category === "protection_credit")).toBe(true);
+    expect(result.breakdown.at(-1)?.category).toBe("severity_floor");
+    expect(result.breakdown.at(-1)?.combinedScore).toBe(result.score);
   });
 });
 

@@ -14,10 +14,13 @@ interface Props {
   onPrincipalSelect?: (amount: number) => void;
   onEvidenceSelect?: (span: [number, number]) => void;
   aiEnhancementStatus?: "unconfigured" | "loading" | "ready" | "error";
+  aiEnhancementError?: string | null;
+  onRetryAI?: () => void;
 }
 
 export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
-  const scored = context.riskBreakdown.filter((item) => item.points > 0);
+  const scored = context.riskBreakdown.filter((item) => item.points > 0 && item.category !== "severity_floor");
+  const adjustments = context.riskBreakdown.filter((item) => item.category === "severity_floor" || item.category === "protection_credit");
   const combinedScore = scored[scored.length - 1]?.combinedScore ?? context.riskScore;
   const hasIssues = context.findings.some((finding) => finding.category !== "protection");
   const reason = hasIssues ? "Review the detected findings and their evidence below."
@@ -31,6 +34,7 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
           <summary className="cursor-pointer">Score breakdown</summary>
           <ul className="mt-2 space-y-1">{scored.map((item, index) => <li key={`${item.findingId ?? item.category}:${index}`}>{item.reasons[0] || item.category.replace(/_/g, " ")}: {Math.round((item.weight ?? item.points / 100) * 100)}% weight{item.reasons.filter((reason) => reason.startsWith("Minimum risk band:")).map((reason) => <span key={reason} className="block text-[10px]">{reason}</span>)}</li>)}</ul>
           <p className="mt-2">Combined result: 100 × (1 − product of (1 − weight)) = {combinedScore.toFixed(1)}/100.</p>
+          {adjustments.map((item) => <p key={item.category} className="mt-1">{item.reasons[0]} {item.points >= 0 ? "+" : ""}{item.points.toFixed(1)} points.</p>)}
           <p className="mt-1">Final score: {Number(context.riskScore.toFixed(1))}/100{combinedScore < context.riskScore ? " (catalog minimum applied)" : ""}.</p>
         </details>}
       </TerminalCard>
@@ -47,7 +51,7 @@ export function AnalysisDashboard({ context, onPrincipalSelect }: Props) {
     </motion.div>
     {context.principalField.needsReview && context.principalField.alternatives.length > 0 && <TerminalCard title="SELECT PRINCIPAL AMOUNT" icon={AlertTriangle}>
       <p className="mb-3 font-mono text-xs text-muted-foreground">Choose the amount labeled as the financed principal.</p>
-      <div className="flex flex-wrap gap-2">{context.principalField.alternatives.map((candidate) => <button type="button" key={`${candidate.position}:${candidate.value}`} onClick={() => onPrincipalSelect?.(candidate.value)} className="border border-border px-3 py-2 text-left font-mono text-xs hover:border-primary/50">
+      <div className="flex flex-wrap gap-2">{[...new Map(context.principalField.alternatives.map((candidate) => [Math.round(candidate.value * 100), candidate])).values()].map((candidate) => <button type="button" key={`${candidate.position}:${candidate.value}`} onClick={() => onPrincipalSelect?.(candidate.value)} className="border border-border px-3 py-2 text-left font-mono text-xs hover:border-primary/50">
         <span className="block text-foreground">{candidate.label}: {formatCurrency(candidate.value, context.currencyCode)}</span><span className="block text-muted-foreground">{candidate.source}</span>
       </button>)}</div>
     </TerminalCard>}
@@ -58,8 +62,12 @@ export function AnalysisNumbers({ context }: Props) {
   const money = (value: number) => formatCurrency(value, context.currencyCode);
   const metrics = [
     { label: "Principal", value: context.principal === null ? null : `${money(context.principal)}${context.principalField.needsReview ? " (unverified)" : ""}` },
-    { label: "Monthly payment", value: context.emi === null ? null : money(context.emi) },
-    { label: "Scheduled payments", value: context.totalPayment === null ? null : money(context.totalPayment) },
+    { label: "Stated payment", value: context.statedEMI.value === null ? null : money(context.statedEMI.value) },
+    { label: "Computed payment", value: context.emi === null ? null : `${money(context.emi)}${context.statedEMI.value !== null && Math.abs(context.emi - context.statedEMI.value) > Math.max(0.02, context.statedEMI.value * 0.005) ? " · mismatch flagged" : ""}` },
+    { label: "Stated total payments", value: context.statedTotalPayments == null ? null : money(context.statedTotalPayments) },
+    { label: "Computed total payments", value: context.totalPayment === null ? null : money(context.totalPayment) },
+    { label: "Stated finance charge", value: context.statedFinanceCharge == null ? null : money(context.statedFinanceCharge) },
+    { label: "Computed interest", value: context.totalInterest === null ? null : money(context.totalInterest) },
     { label: context.rateField.rateType === "deferred" ? "Conditional deferred APR" : context.rateField.rateRole === "penalty" ? "Penalty APR" : context.rateField.rateRole === "promotional" ? "Promotional rate" : "Annual rate", value: context.rateField.value === null ? null : `${context.rateField.value}%` },
     { label: "Rate type", value: context.rateField.value === null ? null : context.rateField.type },
     { label: "Calculation basis", value: context.rateField.value === null ? null : context.rateField.basis },
@@ -77,7 +85,9 @@ export function AnalysisNumbers({ context }: Props) {
   return <TerminalCard title="NUMBERS" icon={DollarSign}><div className="space-y-4 font-mono">
     {!!context.plausibilityConflicts?.length && <div role="alert" className="border border-destructive/40 p-3 text-xs"><h3 className="font-semibold text-foreground">Principal needs review</h3><p className="mt-1 text-muted-foreground">Principal confidence: {Math.round(context.principalField.confidence * 100)}%. Confirm these conflicting amounts before relying on calculations.</p><ul className="mt-2 space-y-2">{context.plausibilityConflicts.map((conflict, index) => <li key={`${conflict.kind}:${conflict.conflictingValue}:${index}`}><p>Principal: {money(conflict.principal)} · {conflict.label}: {money(conflict.conflictingValue)}</p><blockquote className="mt-1 border-l-2 border-border pl-3 text-muted-foreground">{conflict.source}</blockquote></li>)}</ul></div>}
     {metrics.length > 0 && <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4">{metrics.map((metric) => <div key={metric.label}><dt className="text-[10px] text-muted-foreground uppercase">{metric.label}</dt><dd className="mt-1 text-lg font-bold text-foreground">{metric.value}</dd></div>)}</dl>}
-    {context.installmentSchedule && <div className="border-t border-border pt-3 text-sm">{context.installmentSchedule.count} × {money(context.installmentSchedule.amount)} every {context.installmentSchedule.interval} {context.installmentSchedule.intervalUnit}{context.installmentSchedule.interval === 1 ? "" : "s"}<p className="mt-1 text-xs text-muted-foreground">Scheduled total: {money(context.installmentSchedule.total)}</p></div>}
+    {context.minimumPaymentRule && <div className="border-t border-border pt-3 text-xs"><h3 className="font-bold">Minimum payment rule</h3><p className="mt-1">{context.minimumPaymentRule.percentOfBalance == null ? "Percent not extracted" : `${context.minimumPaymentRule.percentOfBalance}% of balance`}{context.minimumPaymentRule.floor == null ? "" : `, with a ${money(context.minimumPaymentRule.floor)} floor`}</p>{context.minimumPaymentRule.source && <blockquote className="mt-1 border-l-2 border-border pl-3 text-muted-foreground">{context.minimumPaymentRule.source}</blockquote>}</div>}
+    {context.installmentSchedule && <div className="border-t border-border pt-3 text-sm">{context.installmentSchedule.segments?.length ? context.installmentSchedule.segments.map((segment, index) => <p key={`${segment.source}:${index}`}>{segment.count} × {money(segment.amount)} every {segment.interval} {segment.intervalUnit}{segment.interval === 1 ? "" : "s"}{segment.kind === "balloon" ? " · final/balloon" : ""} · {money(segment.total)}</p>) : <p>{context.installmentSchedule.count} × {money(context.installmentSchedule.amount)} every {context.installmentSchedule.interval} {context.installmentSchedule.intervalUnit}{context.installmentSchedule.interval === 1 ? "" : "s"}</p>}<p className="mt-1 text-xs text-muted-foreground">Segment total: {money(context.installmentSchedule.total)}{context.installmentSchedule.statedTotal != null ? ` · stated ${money(context.installmentSchedule.statedTotal)} · ${context.installmentSchedule.totalMatchesStated ? "reconciles" : "mismatch flagged"}` : ""}</p>{context.installmentSchedule.renewalScenarios?.length ? <details className="mt-2 text-xs"><summary className="cursor-pointer">Renewal scenarios (illustrative)</summary><ul className="mt-1 space-y-1">{context.installmentSchedule.renewalScenarios.map((scenario) => <li key={scenario.renewals}>{scenario.renewals} renewal{scenario.renewals === 1 ? "" : "s"}: total {money(scenario.totalPaid)} · implied APR {scenario.effectiveAPR == null ? "unavailable" : `${scenario.effectiveAPR.toFixed(2)}%`}</li>)}</ul></details> : null}</div>}
+    {context.rateScenarios && context.rateScenarios.length > 0 && <div className="border-t border-border pt-3 text-xs"><h3 className="mb-2 font-bold">Rate scenarios / transaction APRs</h3><ul className="space-y-2">{context.rateScenarios.map((scenario, index) => <li key={`${scenario.type}:${scenario.annualRate}:${index}`}><span className="capitalize">{scenario.type.replace(/_/g, " ")}</span>: {scenario.annualRate.toFixed(2)}%{scenario.payment == null ? "" : ` · payment ${money(scenario.payment)}`}<p className="text-muted-foreground">{scenario.source}</p></li>)}</ul></div>}
     {costRows.length > 0 && <div className="border-t border-border pt-3"><h3 className="mb-2 text-xs font-bold">Cost breakdown · computed</h3><dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">{costRows.map((row) => <div key={row.label}><dt className="text-muted-foreground">{row.label}</dt><dd className="mt-1">{row.offset ? "−" : ""}{money(row.amount)}</dd></div>)}</dl>{context.netDisbursed !== null && context.netDisbursed > 0 && <p className="mt-3 text-xs text-muted-foreground">Net proceeds: {money(context.netDisbursed)}</p>}</div>}
     {context.cashPriceAnalysis && <div className="border-t border-border pt-3 text-xs space-y-1"><p>Cash price: {money(context.cashPriceAnalysis.cashPrice)} · Total paid: {money(context.cashPriceAnalysis.totalPaid)} · {context.cashPriceAnalysis.multiple.toFixed(2)}× cash price</p>{context.cashPriceAnalysis.extraCost > 0 && <p>Extra cost: {money(context.cashPriceAnalysis.extraCost)}</p>}{context.cashPriceAnalysis.impliedNominalAPR !== null && <p>Implied nominal APR: {context.cashPriceAnalysis.impliedNominalAPR.toFixed(1)}% (computed; first payment one period after agreement)</p>}</div>}
     {context.itemGroups.filter((group) => group.aggregate > 0).map((group) => <details key={group.id} className="border-t border-border pt-3 text-xs"><summary className="cursor-pointer">{group.label}: {money(group.aggregate)}</summary><ul className="mt-2 space-y-1">{group.items.filter((item) => item.amount > 0).map((item, index) => <li key={index} className="flex justify-between gap-3"><span>{item.label || "Unclassified item"}</span><span>{money(item.amount)}</span></li>)}</ul></details>)}
@@ -105,6 +115,7 @@ function FindingAmounts({ finding, context }: { finding: AnalysisFinding; contex
     {component.qualifier && <span className="capitalize">{component.qualifier} </span>}
     {component.amount !== null ? formatCurrency(component.amount, context.currencyCode) : `${component.percent}%`}
     {component.amount !== null && component.percent !== null && <span> ({component.percent}%)</span>}
+    {component.taxAmount != null && component.taxAmount > 0 && <span> + {formatCurrency(component.taxAmount, context.currencyCode)} tax</span>}
     {component.amount === null && component.percent !== null && component.totalImpact !== null && <span> = {formatCurrency(component.totalImpact, context.currencyCode)} (computed)</span>}
     {component.frequency ? ` · ${component.frequency}` : ""}
   </p>)}</div>;
@@ -139,18 +150,19 @@ export function AnalysisExplain({ context }: Props) {
   </TerminalCard>;
 }
 
-export function AnalysisAIAssistant({ context, aiEnhancementStatus = "unconfigured" }: Props) {
+export function AnalysisAIAssistant({ context, aiEnhancementStatus = "unconfigured", aiEnhancementError, onRetryAI }: Props) {
   const actionable = hasActionableFindings(context);
   return <details className="terminal-card">
     <summary className="cursor-pointer px-4 py-3 font-mono"><span className="text-sm font-semibold">AI assistant</span><span className="ml-3 text-[10px] text-muted-foreground">AI-generated, not used in score</span>{!actionable && <p className="mt-2 text-xs text-muted-foreground">No issues to negotiate. Optional: compare rates with other lenders</p>}{aiEnhancementStatus === "loading" && <span className="ml-3 text-[10px] text-muted-foreground">Generating…</span>}</summary>
     <div className="border-t border-border p-4 space-y-4 font-mono text-xs">
       {aiEnhancementStatus === "unconfigured" && <p className="text-muted-foreground">AI insights are unavailable in this build.</p>}
-      {aiEnhancementStatus === "error" && <p className="text-muted-foreground">AI insights could not be loaded. Your analysis is available above.</p>}
+      {aiEnhancementStatus === "error" && <p role="status" className="text-muted-foreground">AI insights could not be loaded: {aiEnhancementError || "OpenRouter returned an unexpected error."} Your local analysis is still available above.</p>}
+      {onRetryAI && (aiEnhancementStatus === "error" || aiEnhancementStatus === "ready") && <button type="button" onClick={onRetryAI} className="interactive-button border border-primary/30 px-3 py-2 text-primary">{aiEnhancementStatus === "error" ? "Retry AI insights" : "Refresh AI insights"}</button>}
       {!!context.aiInsights?.length && <div><h3 className="mb-2 font-semibold">Additional observations</h3><ul className="space-y-2 text-muted-foreground">{context.aiInsights.map((insight) => <li key={insight}>{insight}</li>)}</ul></div>}
       {actionable && !!context.aiNegotiationStrategies?.length && <div><h3 className="mb-2 font-semibold">Negotiation playbook</h3><ul className="space-y-2 text-muted-foreground">{context.aiNegotiationStrategies.map((strategy) => <li key={strategy}>{strategy}</li>)}</ul></div>}
       {actionable && !!context.aiClausesToReview?.length && <div><h3 className="mb-2 font-semibold">Clauses to review</h3><ul className="space-y-2 text-muted-foreground">{context.aiClausesToReview.map((clause) => <li key={clause}>{clause}</li>)}</ul></div>}
-      {actionable && context.aiCounterOfferEmail && <AICounterOfferEmail key={`ai-email:${context.id}`} context={context} />}
-      {aiEnhancementStatus === "ready" && !context.aiInsights?.length && <p className="text-muted-foreground">No additional observations.</p>}
+      {actionable && (context.aiCounterOfferEmail || aiEnhancementStatus === "ready" || aiEnhancementStatus === "error") && <AICounterOfferEmail key={`ai-email:${context.id}`} context={context} />}
+      {aiEnhancementStatus === "ready" && !context.aiInsights?.length && !context.aiNegotiationStrategies?.length && !context.aiClausesToReview?.length && !context.aiCounterOfferEmail && <p className="text-muted-foreground">No additional observations were returned.</p>}
     </div>
   </details>;
 }

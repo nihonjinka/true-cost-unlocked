@@ -57,6 +57,7 @@ export function RiskMeter({ score, band = riskBandForScore(score), incomplete = 
         <div className="absolute bottom-0 left-1/2 w-3 h-3 -ml-1.5 -mb-1.5 rounded-full bg-foreground" />
       </div>
       <div className="text-center">
+        <span className="sr-only">Risk score {Math.round(clampedScore)}/100</span>
         <motion.span
           className="text-2xl font-mono font-bold"
           style={{ color: getColor() }}

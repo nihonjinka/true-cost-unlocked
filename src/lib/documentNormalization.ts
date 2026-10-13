@@ -169,7 +169,9 @@ export function normalizeDocument(originalText: string, options?: TextNormalizat
   let document = makeDocument(originalText, originalText, Array.from({ length: originalText.length }, (_, index) => [index, index + 1]));
   document = replaceMatches(document, /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, () => " ");
   for (const join of config.currencyJoins ?? []) {
-    document = replaceMatches(document, new RegExp(join.pattern, "gi"), (match) => match[0].replace(new RegExp(join.pattern, "i"), join.replacement));
+    // Currency-code joins are uppercase. Case-insensitive matching made the
+    // pattern for "A $" consume ordinary prose such as "a $90 fee".
+    document = replaceMatches(document, new RegExp(join.pattern, "g"), (match) => match[0].replace(new RegExp(join.pattern), join.replacement));
   }
   document = replaceMatches(document, /(?:\.[ \t]*){2,}|…+/g, () => " ");
   document = replaceMatches(document, new RegExp(scheduleRules.numericFormatting.apostropheGroupingPattern, "g"), () => "");

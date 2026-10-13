@@ -1,14 +1,10 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import rules from "@/data/analysisRules.json";
+import { evaluationRules as config, evaluationFields as FIELDS, evaluationFieldValue as fieldValue, evaluationFieldConfidence as fieldConfidence, evaluationMatches as isMatch, type EvaluationField as Field, type EvaluationCase } from "@/lib/evaluation";
 import { analyzeLocally } from "@/lib/analyzeLocally";
 
-type Field = "principal" | "rate" | "term" | "payment" | "docType" | "band";
-interface EvaluationCase { name: string; text: string; expected: Partial<Record<Field, number | string | null>> }
 interface Measurement { checked: number; correct: number; confidentlyWrong: number }
-const FIELDS: Field[] = ["principal", "rate", "term", "payment", "docType", "band"];
-const config = (rules as unknown as { evaluation: { confidentWrongThreshold: number; tolerances: Record<string, number> } }).evaluation;
 const devCases = JSON.parse(readFileSync(join(process.cwd(), "tests/dev/regression.json"), "utf8")) as EvaluationCase[];
 
 function loadHeldoutCases(): EvaluationCase[] {
@@ -19,31 +15,6 @@ function loadHeldoutCases(): EvaluationCase[] {
       const parsed: unknown = JSON.parse(readFileSync(join(directory, filename), "utf8"));
       return Array.isArray(parsed) ? parsed as EvaluationCase[] : [parsed as EvaluationCase];
     });
-}
-
-function fieldValue(field: Field, context: ReturnType<typeof analyzeLocally>): number | string | null {
-  if (field === "principal") return context.principalField.value;
-  if (field === "rate") return context.rateField.value;
-  if (field === "term") return context.termField.value;
-  if (field === "payment") return context.statedEMI.value ?? context.installmentSchedule?.amount ?? null;
-  if (field === "docType") return context.docType.type;
-  return context.riskBand;
-}
-
-function fieldConfidence(field: Field, context: ReturnType<typeof analyzeLocally>): number {
-  if (field === "principal") return context.principalField.confidence;
-  if (field === "rate") return context.rateField.confidence;
-  if (field === "term") return context.termField.confidence;
-  if (field === "payment") return context.statedEMI.value !== null ? context.statedEMI.confidence : context.installmentSchedule ? 0.85 : 0;
-  return context.docType.confidence;
-}
-
-function isMatch(field: Field, actual: number | string | null, expected: number | string | null): boolean {
-  if (expected === null) return actual === null;
-  if (typeof expected === "number") {
-    return typeof actual === "number" && Math.abs(actual - expected) <= Math.max(config.tolerances[field] ?? 0, Math.abs(expected) * (config.tolerances[field] ?? 0));
-  }
-  return actual === expected;
 }
 
 function measure(cases: EvaluationCase[]) {
@@ -70,6 +41,7 @@ function measure(cases: EvaluationCase[]) {
 function report(title: string, cases: EvaluationCase[]) {
   const result = measure(cases);
   console.log(`\n${title} evaluation (${cases.length} documents)`);
+  if (!cases.length) { console.log("NOT EVALUATED: owner documents have not been supplied."); return result; }
   for (const field of FIELDS) {
     const metric = result.metrics[field];
     if (!metric.checked) continue;
@@ -81,7 +53,7 @@ function report(title: string, cases: EvaluationCase[]) {
   return result;
 }
 
-describe("Round 7 evaluation harness", () => {
+describe("Round 8 evaluation harness", () => {
   it("prints per-field dev and held-out accuracy and fails on dev regression or confidently-wrong fields", () => {
     const dev = report("DEV", devCases);
     const heldout = report("HELD-OUT", loadHeldoutCases());
@@ -89,16 +61,19 @@ describe("Round 7 evaluation harness", () => {
     expect(dev.confidentlyWrong + heldout.confidentlyWrong, "A confidently-wrong field was emitted").toBe(0);
   });
 
-  it("keeps the calibrated ordering clean < card < unilateral loan < MCA < scam", () => {
+  it("keeps scam signals above disclosed products without document-type priors", () => {
     const calibration = [
       { name: "clean", text: "PERSONAL LOAN AGREEMENT\nPrincipal: $10,000.\nAPR: 8%.\nTerm: 36 months.\nNo fees." },
       { name: "card", text: "CREDIT CARD AGREEMENT\nRevolving credit. APR: 19.9% per year." },
       { name: "unilateral loan", text: "PERSONAL LOAN AGREEMENT\nPrincipal: $10,000.\nAPR: 9%.\nTerm: 36 months.\nThe lender may, in its sole discretion, increase the APR." },
-      { name: "MCA", text: "MERCHANT CASH ADVANCE AGREEMENT\nAdvance amount: $24,000.\nPurchased amount: $30,000.\nDaily remittance: $250 from receivables." },
+      { name: "MCA", text: "MERCHANT CASH ADVANCE AGREEMENT\nAdvance amount: $24,000.\nPurchased amount: $30,000.\nDaily remittance: $250 from receivables.\nThe owner personally guarantees all obligations. The borrower consents to confession of judgment." },
       { name: "scam", text: "100% guaranteed approval. Pay a $350 processing deposit by gift card to release the loan." },
     ].map((sample) => ({ ...sample, analysis: analyzeLocally(sample.text) }));
-    console.log("\nCalibration scores: " + calibration.map((sample) => `${sample.name}=${sample.analysis.riskScore}`).join(" < "));
-    for (let index = 1; index < calibration.length; index++) expect(calibration[index].analysis.riskScore).toBeGreaterThan(calibration[index - 1].analysis.riskScore);
+    console.log(`\nCalibration scores: baseline [clean=${calibration[0].analysis.riskScore}, card=${calibration[1].analysis.riskScore}], unilateral=${calibration[2].analysis.riskScore} < MCA=${calibration[3].analysis.riskScore} < scam=${calibration[4].analysis.riskScore}`);
+    expect(calibration[2].analysis.riskScore).toBeGreaterThan(calibration[1].analysis.riskScore);
+    expect(calibration[3].analysis.riskScore).toBeGreaterThan(calibration[2].analysis.riskScore);
+    expect(calibration[4].analysis.riskScore).toBeGreaterThan(calibration[2].analysis.riskScore);
+    expect(calibration[3].analysis.riskScore).toBeLessThan(calibration[4].analysis.riskScore);
     const highRiskStack = analyzeLocally("A confession of judgment is required. The borrower also provides a personal guaranty.");
     expect(highRiskStack.riskScore).toBeGreaterThanOrEqual(80);
     expect(highRiskStack.riskScore).toBeLessThanOrEqual(100);

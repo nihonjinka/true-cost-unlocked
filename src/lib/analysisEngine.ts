@@ -8,13 +8,13 @@ type LabelRule = { id: string; pattern: string; score: number; kind: "principal"
 type DocumentRule = { id: DocumentType; label: string; signals: Array<{ pattern: string; weight: number }> };
 type FeeRule = { id: string; label: string; patterns: string[]; category: string; severity: number; explanation: string; suppressWhen?: string[]; polarityOverride?: FindingPolarity; fallbackOnly?: boolean; defaultBasis?: string; quantified?: boolean; minimumRiskBand?: RiskBand };
 type Clause = { text: string; start: number; end: number };
-export type RateRole = "base" | "promotional" | "penalty" | "tax" | "fee_percent" | "discount";
+export type RateRole = "base" | "purchase" | "cash_advance" | "balance_transfer" | "promotional" | "penalty" | "tax" | "fee_percent" | "discount" | "cap";
 export interface ParsedRateCandidate {
   value: number;
   statedValue: number;
   period: TimeUnit;
   basis: "flat" | "reducing" | "unspecified";
-  type: "fixed" | "variable" | "introductory" | "unspecified";
+  type: "fixed" | "variable" | "adjustable" | "introductory" | "unspecified";
   role: RateRole;
   start: number;
   end: number;
@@ -38,7 +38,7 @@ const config = rules as {
   scenarioPeriods: { gracePattern: string; daysPerUnit: Record<string, number> };
   protectionCatalog: Array<{ id: string; label: string; pattern: string; explanation: string; acceptedPolarities: string[]; disallowedPatterns?: string[]; feeRuleId?: string }>;
   rateAttributes: { types: Array<{ type: ParsedRateCandidate["type"]; pattern: string; acceptedPolarities?: string[] }>; flatPattern: string; reducingPattern: string; aprPattern: string; flatPricingProducts: string[] };
-  segmentation: { abbreviations: string[]; headingPatterns?: string[] };
+  segmentation: { abbreviations: string[]; headingPatterns?: string[]; operativeHeadingPrefixPattern?: string; letteredLabelHeadingPrefixPattern?: string };
   monetaryBases: Array<{ id: string; pattern: string }>;
   rateRoleRules?: Array<{ role: RateRole; pattern: string }>;
   quantityRelationships?: {
@@ -51,7 +51,8 @@ const config = rules as {
   documentTypes: DocumentRule[];
   feeCatalog: Array<FeeRule & { riskReason?: string }>;
   claimCatalog: Array<{ id: string; label: string; pattern: string; predicates?: string[] }>;
-  riskRules: Array<{ id: string; category: string; weight: number; pattern: string; severity: number; threshold?: number; polarityOverride?: FindingPolarity }>;
+  riskRules: Array<{ id: string; label?: string; category: string; weight: number; pattern: string; severity: number; threshold?: number; polarityOverride?: FindingPolarity; minimumRiskBand?: RiskBand }>;
+  conceptSlots?: Array<{ id: string; label: string; category: string; severity: number; minimumRiskBand?: RiskBand; windowWords: number; slots: Record<string, string[]>; explanation: string; polarityOverride?: FindingPolarity }>;
   analysisConfidenceThreshold: number;
   glossary: Array<{ id: string; term: string; pattern: string; definition: string }>;
 };
@@ -133,38 +134,87 @@ function sentenceBoundary(text: string, index: number): boolean {
 /** Clause boundaries are shared by parsers, warnings, and evidence so snippets remain intact. */
 export function segmentClauses(text: string): Clause[] {
   const clauses: Clause[] = [];
+  const pushClause = (content: string, chunkStart: number, chunkEnd: number, contentOffset: number) => {
+    const raw = content.slice(chunkStart, chunkEnd);
+    const value = raw.trim();
+    if (!value) return;
+    const leading = raw.search(/\S/);
+    const trailing = raw.trimEnd().length;
+    clauses.push({ text: value, start: contentOffset + chunkStart + Math.max(0, leading),
+      end: contentOffset + chunkStart + trailing });
+  };
   const addLine = (line: string, offset: number) => {
     if (config.segmentation.headingPatterns?.some((pattern) => new RegExp(pattern).test(line.trim()))) return;
+    let content = line;
+    let contentOffset = offset;
+    for (const pattern of [config.segmentation.operativeHeadingPrefixPattern, config.segmentation.letteredLabelHeadingPrefixPattern]) {
+      const prefix = pattern ? new RegExp(pattern, "i").exec(content) : null;
+      if (prefix?.[0]) { content = content.slice(prefix[0].length); contentOffset += prefix[0].length; }
+    }
+    if (!content.trim()) return;
     const labelStarts: number[] = [];
     const maximumLabelCharacters = extractionRules.maximumLabelCharacters ?? 120;
-    const labels = new RegExp(String.raw`(?:^|[\s,;])([A-Za-z][A-Za-z0-9 /()_'’&.-]{1,${maximumLabelCharacters}}):(?=\s*(?:${CURRENCY_TOKEN}|[$₹€£¥]?\s*\d))`, "g");
-    for (const match of line.matchAll(labels)) {
+    const labels = new RegExp(String.raw`(?:^|[\r\n \t,;])([A-Za-z][A-Za-z0-9 /()_'’&.-]{1,${maximumLabelCharacters}})(?::|@)(?=\s*(?:${CURRENCY_TOKEN}|[$₹€£¥]?\s*\d))`, "g");
+    const lineLabels = new RegExp(String.raw`(?:^|[\r\n])([A-Za-z][A-Za-z0-9 /()_'’&.-]{1,${maximumLabelCharacters}}):(?=\s*\S)`, "g");
+    for (const match of [...content.matchAll(labels), ...content.matchAll(lineLabels)]) {
       const labelStart = (match.index ?? 0) + (match[0].length - match[1].length - 1);
       if (labelStart > 0) labelStarts.push(labelStart);
     }
     const sorted = [0, ...labelStarts].sort((a, b) => a - b);
-    const chunks = sorted.map((start, index) => ({ start, end: sorted[index + 1] ?? line.length }));
+    const chunks = sorted.map((start, index) => ({ start, end: sorted[index + 1] ?? content.length }));
     for (const chunk of chunks) {
       let start = chunk.start;
       for (let i = chunk.start; i < chunk.end; i++) {
-        if (sentenceBoundary(line, i)) {
-          const value = line.slice(start, i + 1).trim();
-          if (value) {
-            const leading = line.slice(start, i + 1).search(/\S/);
-            clauses.push({ text: value, start: offset + start + Math.max(0, leading), end: offset + i + 1 });
+        if (content[i] === "\n") {
+          const previousLineStart = content.lastIndexOf("\n", i - 1) + 1;
+          const previousLine = content.slice(previousLineStart, i);
+          const nextLineStart = i + 1;
+          const nextLineEnd = content.indexOf("\n", nextLineStart);
+          const nextLine = content.slice(nextLineStart, nextLineEnd < 0 ? content.length : nextLineEnd);
+          const previousIsLabeledField = /^\s*[A-Za-z][A-Za-z0-9 /()_'’&.-]{1,100}:\s*\S/.test(previousLine);
+          const nextStartsOperativeSection = [config.segmentation.operativeHeadingPrefixPattern, config.segmentation.letteredLabelHeadingPrefixPattern]
+            .some((pattern) => pattern && new RegExp(pattern, "i").test(nextLine));
+          if (previousIsLabeledField || nextStartsOperativeSection) {
+            pushClause(content, start, i, contentOffset);
+            start = i + 1;
+            continue;
           }
+        }
+        if (sentenceBoundary(content, i)) {
+          pushClause(content, start, i + 1, contentOffset);
           start = i + 1;
         }
       }
-      const value = line.slice(start, chunk.end).trim();
-      if (value) {
-        const leading = line.slice(start, chunk.end).search(/\S/);
-        clauses.push({ text: value, start: offset + start + Math.max(0, leading), end: offset + chunk.end });
-      }
+      pushClause(content, start, chunk.end, contentOffset);
     }
   };
-  const lines = /[^\r\n•]+/g;
-  for (const match of text.matchAll(lines)) if (match.index !== undefined) addLine(match[0], match.index);
+  // Join visual line wraps inside a paragraph before looking for sentence
+  // boundaries. Keep all source characters as spaces where removed so each
+  // clause offset still points into the original text.
+  const paragraphs = text.split(/(\r?\n[\t ]*\r?\n+)/);
+  let sourceOffset = 0;
+  for (let index = 0; index < paragraphs.length; index += 2) {
+    const paragraph = paragraphs[index];
+    if (paragraph) {
+      let mapped = paragraph;
+      let lineOffset = 0;
+      let chunkOffset = 0;
+      for (const line of paragraph.split(/(?<=\n)/)) {
+        const content = line.replace(/[\r\n]+$/, "");
+        if (config.segmentation.headingPatterns?.some((pattern) => new RegExp(pattern).test(content.trim()))) {
+          mapped = mapped.slice(0, lineOffset) + " ".repeat(content.length) + mapped.slice(lineOffset + content.length);
+          // A standalone heading starts a new operative clause. Keep its
+          // label available to the legal-section parser, but never include it
+          // in finding evidence or let it join the preceding clause.
+          if (lineOffset > chunkOffset) addLine(mapped.slice(chunkOffset, lineOffset), sourceOffset + chunkOffset);
+          chunkOffset = lineOffset + line.length;
+        }
+        lineOffset += line.length;
+      }
+      addLine(mapped.slice(chunkOffset), sourceOffset + chunkOffset);
+    }
+    sourceOffset += paragraph.length + (paragraphs[index + 1]?.length ?? 0);
+  }
   return clauses;
 }
 
@@ -454,6 +504,7 @@ export function resolvePrincipal(
     });
   }
   ranked.sort((a, b) => b.score - a.score || a.position - b.position);
+  ranked = [...new Map(ranked.map((candidate) => [Math.round(candidate.value * 100), candidate])).values()];
   const best = ranked[0];
   const next = ranked[1];
   const conflict = Boolean(best && next && Math.abs(best.value - next.value) / Math.max(best.value, next.value) > 0.05 && best.score - next.score <= 25);
@@ -745,10 +796,16 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
       const polarity = classified === "hypothetical" ? classified : item.polarityOverride ?? classified;
       if (polarity === "hypothetical") continue;
       const negated = polarity === "negated" || polarity === "waived/zero";
+      // Generic fallback fee patterns also match exclusion wording such as
+      // "no fee of any kind"; the protection catalog represents that clause.
+      if (item.fallbackOnly && negated) continue;
       const conditions = source.match(new RegExp(config.polarity.conditionPattern, "gi"))?.map((value) => value.trim()) ?? [];
       const composite = /\+\s*(\d+(?:\.\d+)?)\s*%\s*(?:gst|vat|hst|pst|tax|sales\s+tax)\b/i.exec(source);
+      const explicitTax = /(?:\bplus\s+|\+\s*)(?:(?:US\$|C\$|A\$|S\$|[$₹€£¥]|USD|INR|EUR|GBP|CAD|AUD|SGD|AED|Rs\.?)\s*)?(?<tax>(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?)\s*(?:in\s+)?(?:gst|vat|hst|pst|sales\s+tax|tax)\b|(?:\bplus\s+)(?:gst|vat|hst|pst|sales\s+tax|tax)\s*(?:of\s+)?(?:(?:US\$|C\$|A\$|S\$|[$₹€£¥]|USD|INR|EUR|GBP|CAD|AUD|SGD|AED|Rs\.?)\s*)?(?<taxAfter>(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?)/i.exec(source);
       const taxPercent = composite ? Number(composite[1]) : null;
-      const taxAmount = taxPercent !== null && amount ? amount.amount * taxPercent / 100 : null;
+      const taxAmount = explicitTax?.groups?.tax || explicitTax?.groups?.taxAfter
+        ? Number((explicitTax.groups.tax ?? explicitTax.groups.taxAfter).replace(/,/g, ""))
+        : taxPercent !== null && amount ? amount.amount * taxPercent / 100 : null;
       let totalImpact: number | null = resolvedAmount;
       if (frequency === "per_installment" && totalImpact !== null && installmentCount) totalImpact *= installmentCount;
       if (frequency === "monthly" && totalImpact !== null && termMonths) totalImpact *= Math.ceil(termMonths);
@@ -840,11 +897,13 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
       const laterAmount = firstAmount ? findStructuredAmount(clause.text, firstAmount.end) : null;
       const nextClause = clauses[clauseIndex + 1];
       const nextAmount = nextClause ? findStructuredAmount(nextClause.text) : null;
-      const noChargeClaim = /\bno\s+(?:annual\s+)?fee\b/i.test(clause.text);
+      const noChargeClaim = /\bno\s+(?:(?:annual|yearly|account|service)\s+)?(?:fee|charge)\b|\b(?:annual|yearly)\s+(?:fee|charge)\s+(?:is\s+)?waived\b/i.test(clause.text);
       const nextClauseQualifies = Boolean(nextClause && nextAmount && nextAmount.amount > 0 && laterConfig
         && new RegExp(laterConfig, "i").test(nextClause.text));
-      const sameClauseQualifies = Boolean(firstAmount?.amount === 0 && laterAmount && laterAmount.amount > 0 && laterConfig
-        && new RegExp(laterConfig, "i").test(clause.text));
+      const sameClauseTiming = laterConfig ? new RegExp(laterConfig, "i").exec(clause.text) : null;
+      const sameClauseLaterAmount = sameClauseTiming
+        ? findStructuredAmount(clause.text, sameClauseTiming.index + sameClauseTiming[0].length) : null;
+      const sameClauseQualifies = Boolean(noChargeClaim && sameClauseLaterAmount && sameClauseLaterAmount.amount > 0);
       if ((sameClauseQualifies || (noChargeClaim && nextClauseQualifies)) && laterConfig) {
         const evidence = nextClauseQualifies ? text.slice(clause.start, nextClause!.end) : clause.text;
         const evidenceEnd = nextClauseQualifies ? nextClause!.end : clause.end;
@@ -853,7 +912,7 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
             && findings[index].source === clause.text) findings.splice(index, 1);
         }
         findings.push(canonicalFinding({ id: "conditional_" + item.id, topicId: item.id, label: "Conditional: " + item.label,
-          category: "conditional_term", severity: 0, polarity: "conditional", amount: (laterAmount ?? nextAmount)!.amount, percent: null,
+          category: "conditional_term", severity: 0, polarity: "conditional", amount: (sameClauseLaterAmount ?? laterAmount ?? nextAmount)!.amount, percent: null,
           basis: null, frequency: null, conditions: evidence.match(new RegExp(config.polarity.conditionPattern, "gi")) ?? [],
           source: evidence, position: clause.start, clauseSpan: [clause.start, evidenceEnd], evidence,
           explanation: "The initial protection expires or changes under a later stated charge.", totalImpact: null, negated: false, amountNotStated: false }));
@@ -863,7 +922,7 @@ export function detectCostsGeneric(text: string, principal: number | null, insta
         && finding.topicId === item.feeRuleId && finding.source === clause.text)) continue;
       if (findings.some((finding) => finding.category === "protection" && finding.id === item.id)) continue;
       findings.push(canonicalFinding({ id: item.id, topicId: item.id, label: item.label, category: "protection", severity: 0,
-        polarity, amount: null, percent: null, basis: null, frequency: null,
+        polarity, amount: 0, percent: null, basis: null, frequency: null,
         conditions: clause.text.match(new RegExp(config.polarity.conditionPattern, "gi")) ?? [],
         source: clause.text, position: clause.start, explanation: item.explanation, totalImpact: 0, negated: true, amountNotStated: false }));
     }
@@ -969,7 +1028,7 @@ export function mergeClauseFindings(findings: readonly CostFinding[]): AnalysisF
     const span = finding.clauseSpan;
     const clauseKey = span[1] > span[0] ? span.join(":") : finding.position + ":" + finding.evidence.trim();
     // A waiver and a later conditional charge can coexist within the same clause.
-    const key = clauseKey + ":" + (finding.category === "protection" || finding.negated ? "protection" : "finding");
+    const key = clauseKey + ":" + (finding.negated ? "negated:" : "") + finding.category;
     groups.set(key, [...(groups.get(key) ?? []), finding]);
   }
   return [...groups.values()].map((group) => {
@@ -993,18 +1052,19 @@ export function mergeClauseFindings(findings: readonly CostFinding[]): AnalysisF
 /** Build the evidence list once; scores and panels project the same objects. */
 export function collectRuleFindings(text: string, findings: CostFinding[], docType: DocumentType, claims: DetectedClaim[], rateConfirmed = true): AnalysisFinding[] {
   const output = findings.map(canonicalFinding);
-  const add = (rule: typeof config.riskRules[number], evidence: string, explanation: string, provenance: AnalysisFinding["provenance"] = "stated-in-document", suffix = "", polarity: FindingPolarity = "asserted") => {
-    const existing = output.find((finding) => !finding.negated && finding.evidence === evidence && finding.category !== "protection");
+  const add = (rule: { id: string; label?: string; category: string; severity: number; minimumRiskBand?: RiskBand }, evidence: string, explanation: string, provenance: AnalysisFinding["provenance"] = "stated-in-document", suffix = "", polarity: FindingPolarity = "asserted") => {
+    const existing = output.find((finding) => !finding.negated && finding.evidence === evidence && finding.category === rule.category);
     if (existing) {
       existing.riskRuleIds = Array.from(new Set([...(existing.riskRuleIds ?? []), rule.id]));
       existing.severity = Math.max(existing.severity, rule.severity);
+      if (rule.minimumRiskBand && (!existing.minimumRiskBand || rules.riskScoring.bands[rule.minimumRiskBand] > rules.riskScoring.bands[existing.minimumRiskBand])) existing.minimumRiskBand = rule.minimumRiskBand;
       return;
     }
     const position = Math.max(0, text.indexOf(evidence));
-    output.push(canonicalFinding({ id: rule.id + suffix, topicId: rule.id, label: rule.id.replace(/_/g, " "), category: rule.category,
+    output.push(canonicalFinding({ id: rule.id + suffix, topicId: rule.id, label: rule.label ?? rule.id.replace(/_/g, " "), category: rule.category,
       severity: rule.severity, amount: null, percent: null, basis: null, frequency: null,
       conditions: [], source: evidence, position, explanation, totalImpact: null, negated: false,
-      provenance, polarity, riskRuleIds: [rule.id], ruleOnly: true }));
+      provenance, polarity, riskRuleIds: [rule.id], minimumRiskBand: rule.minimumRiskBand, ruleOnly: true }));
   };
   for (const rule of config.riskRules) {
     if (rule.id === "claim_contradiction") {
@@ -1022,8 +1082,63 @@ export function collectRuleFindings(text: string, findings: CostFinding[], docTy
         const polarity = classified === "hypothetical" ? classified : rule.polarityOverride ?? classified;
         if (["negated", "waived/zero", "hypothetical"].includes(polarity)) continue;
         add(rule, clause.text, "A configured contract risk pattern was found in this clause.", "stated-in-document", "", polarity);
-        break;
       }
+    }
+  }
+  const lemma = (word: string) => {
+    const stem = word.endsWith("ies") && word.length > 4 ? word.slice(0, -3) + "y"
+      : word.endsWith("ing") && word.length > 5 ? word.slice(0, -3)
+        : word.endsWith("ed") && word.length > 4 ? word.slice(0, -2)
+          : word.endsWith("es") && word.length > 4 ? word.slice(0, -2)
+            : word.endsWith("s") && word.length > 3 ? word.slice(0, -1) : word;
+    // Normalize common silent-e verb stems (seize/seizing, take/taking) the
+    // same way so configured synonym slots match ordinary inflections.
+    return stem.endsWith("e") && stem.length > 4 ? stem.slice(0, -1) : stem;
+  };
+  const tokensFor = (value: string) => (value.toLowerCase().match(/[a-z0-9]+/g) ?? []).map(lemma);
+  const phraseRanges = (source: string, phrases: string[]) => {
+    const words = tokensFor(source);
+    return phrases.flatMap((phrase) => {
+      const expected = tokensFor(phrase);
+      if (!expected.length) return [];
+      const positions: Array<[number, number]> = [];
+      for (let start = 0; start <= words.length - expected.length; start += 1) {
+        if (expected.every((word, offset) => words[start + offset] === word)) positions.push([start, start + expected.length - 1]);
+      }
+      return positions;
+    });
+  };
+  for (const clause of segmentClauses(text)) {
+    for (const rule of config.conceptSlots ?? []) {
+      const slots = Object.values(rule.slots).map((phrases) => phraseRanges(clause.text, phrases));
+      if (!slots.length || slots.some((matches) => matches.length === 0)) continue;
+      const nearbyCombination = (slotIndex: number, selected: Array<[number, number]>): Array<[number, number]> | null => {
+        if (slotIndex === slots.length) {
+          const low = Math.min(...selected.map((range) => range[0]));
+          const high = Math.max(...selected.map((range) => range[1]));
+          return high - low <= rule.windowWords ? selected : null;
+        }
+        for (const range of slots[slotIndex]) {
+          const candidate = [...selected, range];
+          const low = Math.min(...candidate.map((item) => item[0]));
+          const high = Math.max(...candidate.map((item) => item[1]));
+          if (high - low > rule.windowWords) continue;
+          const result = nearbyCombination(slotIndex + 1, candidate);
+          if (result) return result;
+        }
+        return null;
+      };
+      const targetSlots = nearbyCombination(0, []);
+      if (!targetSlots) continue;
+      const startWord = Math.min(...targetSlots.map((range) => range[0]));
+      const endWord = Math.max(...targetSlots.map((range) => range[1]));
+      const wordSpans = Array.from(clause.text.matchAll(/[a-z0-9]+/gi)).map((match) => [match.index!, match.index! + match[0].length] as const);
+      const start = wordSpans[startWord]?.[0] ?? 0;
+      const end = wordSpans[endWord]?.[1] ?? clause.text.length;
+      const classified = classifyPolarity(clause.text, start, end);
+      const polarity = classified === "hypothetical" ? classified : rule.polarityOverride ?? classified;
+      if (["negated", "waived/zero", "hypothetical"].includes(polarity)) continue;
+      add(rule, clause.text, rule.explanation, "stated-in-document", "", polarity);
     }
   }
   return mergeClauseFindings(output);
@@ -1032,16 +1147,7 @@ export function collectRuleFindings(text: string, findings: CostFinding[], docTy
 export function calculateRisk(text: string, docType: DocumentType, findings: CostFinding[], claims: DetectedClaim[], confidence: number, rateConfirmed = true, incompleteAnalysis = false, rulesMaterialized = false): { score: number; band: RiskBand; breakdown: RiskBreakdownItem[]; analysisIncomplete: boolean } {
   const scored = rulesMaterialized ? findings : collectRuleFindings(text, findings, docType, claims, rateConfirmed);
   const risk = scoreRiskFindings(scored);
-  const typeFloor = Number((rules as unknown as { documentTypeScoreFloors?: Partial<Record<DocumentType, number>> }).documentTypeScoreFloors?.[docType] ?? 0);
-  const score = Math.min(100, Math.max(risk.score, typeFloor));
-  const breakdown = [...risk.breakdown];
-  if (typeFloor > risk.score) {
-    const previous = risk.score / 100;
-    const weight = (typeFloor / 100 - previous) / Math.max(0.0001, 1 - previous);
-    breakdown.push({ category: "document_type_floor", points: weight * 100, weight, baseWeight: weight, repeatFactor: 1,
-      reasons: [`Configured ${docType.replace(/_/g, " ")} calibration floor: ${typeFloor}.`], combinedScore: typeFloor });
-  }
-  return { score, band: riskBandForScore(score), breakdown,
+  return { score: risk.score, band: risk.band, breakdown: risk.breakdown,
     analysisIncomplete: incompleteAnalysis || confidence < config.analysisConfidenceThreshold };
 }
 

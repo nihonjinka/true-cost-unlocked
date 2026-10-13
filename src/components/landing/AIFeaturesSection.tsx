@@ -1,8 +1,8 @@
 import { motion } from "framer-motion";
-import { Mail, BookOpen, AlertTriangle, Globe } from "lucide-react";
+import { Mail, BookOpen, AlertTriangle, Globe, type LucideIcon } from "lucide-react";
 import React, { useState } from "react";
 
-const features = [
+const features: Array<{ id: string; icon: LucideIcon; title: string; desc: string }> = [
   {
     id: "AI.01",
     icon: Mail,
@@ -29,7 +29,7 @@ const features = [
   },
 ];
 
-function FeatureCard({ mod, i }: { mod: any; i: number }) {
+function FeatureCard({ mod, i }: { mod: (typeof features)[number]; i: number }) {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isHovering, setIsHovering] = useState(false);
 

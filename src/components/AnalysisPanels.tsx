@@ -8,7 +8,6 @@ import { SavingsCalculator } from "./SavingsCalculator";
 import { LoanComparison } from "./LoanComparison";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { calculateEMI, calculateFlatLoan, formatCurrency } from "@/lib/financial";
-import { hasActionableFindings } from "@/lib/analyzeWithAI";
 import type { AnalysisContext } from "@/lib/analysisContext";
 
 export type AIEnhancementStatus = "unconfigured" | "loading" | "ready" | "error";
@@ -17,6 +16,8 @@ interface Props {
   onPrincipalSelect?: (amount: number) => void;
   onEvidenceSelect?: (span: [number, number]) => void;
   aiEnhancementStatus?: AIEnhancementStatus;
+  aiEnhancementError?: string | null;
+  onRetryAI?: () => void;
 }
 function RateChangeScenario({ context }: Props) {
   const [futureRate, setFutureRate] = useState<number | "">("");
@@ -45,6 +46,13 @@ const availableTools = (context: AnalysisContext) => TOOLS.filter((tool) => tool
 
 function AnalysisTools({ context }: Props) {
   const tools = availableTools(context);
+  if (tools.length === 0) {
+    const reason = context.calculator.unsupportedReason
+      ?? (context.calculator.missingInputs.length
+        ? `Available after confirming: ${context.calculator.missingInputs.join(", ")}.`
+        : "No calculator applies to the extracted terms.");
+    return <div className="space-y-2"><h2 className="font-mono text-sm font-semibold">Tools</h2><p className="terminal-card p-4 font-mono text-xs text-muted-foreground">{reason}</p></div>;
+  }
   return <div className="space-y-2"><h2 className="font-mono text-sm font-semibold">Tools</h2><Tabs key={context.id} defaultValue={tools[0]?.id}>
     <TabsList className="h-auto flex flex-wrap justify-start">{tools.map((tool) => <TabsTrigger key={tool.id} value={tool.id} className="font-mono text-xs">{tool.label}</TabsTrigger>)}</TabsList>
     {tools.map((tool) => <TabsContent key={tool.id} value={tool.id}>{tool.render(context)}</TabsContent>)}
@@ -62,12 +70,12 @@ const PANEL_REGISTRY: PanelDescriptor[] = [
   { id: "numbers", available: ({ context }) => hasAnalysisNumbers(context), render: (props) => <AnalysisNumbers {...props} /> },
   { id: "findings", available: ({ context }) => context.findings.length > 0, render: (props) => <AnalysisFindings {...props} /> },
   { id: "explain", available: ({ context }) => context.insights.length > 0 || context.glossary.length > 0, render: (props) => <AnalysisExplain {...props} /> },
-  { id: "ai-assistant", available: ({ context, aiEnhancementStatus }) => !hasActionableFindings(context) || aiEnhancementStatus !== "unconfigured" || !!context.aiInsights?.length || !!context.aiCounterOfferEmail, render: (props) => <AnalysisAIAssistant {...props} /> },
-  { id: "tools", available: ({ context }) => availableTools(context).length > 0, render: (props) => <AnalysisTools {...props} /> },
+  { id: "ai-assistant", render: (props) => <AnalysisAIAssistant {...props} /> },
+  { id: "tools", render: (props) => <AnalysisTools {...props} /> },
 ];
 
-export function AnalysisPanels({ context, onPrincipalSelect, onEvidenceSelect, aiEnhancementStatus = "unconfigured" }: Props) {
-  const props = { context, onPrincipalSelect, onEvidenceSelect, aiEnhancementStatus };
+export function AnalysisPanels({ context, onPrincipalSelect, onEvidenceSelect, aiEnhancementStatus = "unconfigured", aiEnhancementError, onRetryAI }: Props) {
+  const props = { context, onPrincipalSelect, onEvidenceSelect, aiEnhancementStatus, aiEnhancementError, onRetryAI };
   return <motion.section key={context.id} data-analysis-id={context.id} className="space-y-4" initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.22 } } }}>
     {PANEL_REGISTRY.filter((panel) => !panel.available || panel.available(props)).map((panel) => <motion.div key={panel.id} data-analysis-panel={panel.id}
       variants={{ hidden: { opacity: 0, y: 32, scale: 0.985, filter: "blur(6px)" }, visible: { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" } }}

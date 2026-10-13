@@ -28,12 +28,13 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
   const fileInput = useRef<HTMLInputElement>(null);
   const textInput = useRef<HTMLTextAreaElement>(null);
   const importVersion = useRef(0);
+  const importRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     const delay = (rules as unknown as { inputExtractionDebounceMs?: number }).inputExtractionDebounceMs ?? 180;
     const timer = setTimeout(() => setExtractionText(text), delay);
     return () => clearTimeout(timer);
   }, [text]);
-  useEffect(() => () => { importVersion.current += 1; }, []);
+  useEffect(() => () => { importVersion.current += 1; importRequest.current?.abort(); }, []);
   const extractedValues = useMemo(() => extractValuesFromText(extractionText), [extractionText]);
   const extracting = extractionText !== text;
   const detectedCurrency = useMemo(() => detectCurrency(text), [text]);
@@ -42,6 +43,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
     || (duration === null && extractedValues.tenureMonths !== null && !extractedValues.termField.needsReview));
   const invalidate = () => {
     importVersion.current += 1;
+    importRequest.current?.abort();
     setIsImporting(false);
     setProgress(null);
     setImportError(null);
@@ -71,11 +73,13 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
     if (!file) return;
     invalidate();
     const version = importVersion.current;
+    const controller = new AbortController();
+    importRequest.current = controller;
     setIsImporting(true);
     setImportError(null);
     setProgress(null);
     try {
-      const imported = await importDocument(file, { onProgress: (next) => { if (version === importVersion.current) setProgress(next); } });
+      const imported = await importDocument(file, { signal: controller.signal, onProgress: (next) => { if (version === importVersion.current) setProgress(next); } });
       if (version !== importVersion.current) return;
       setText(imported.text);
       clearOverrides();
@@ -84,10 +88,11 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
       if (version !== importVersion.current) return;
       setImportError(error instanceof Error ? error.message : "The document could not be read in this browser.");
     } finally {
-      if (version !== importVersion.current) return;
-      setIsImporting(false);
-      setProgress(null);
-      if (fileInput.current) fileInput.current.value = "";
+      if (version === importVersion.current) {
+        setIsImporting(false);
+        setProgress(null);
+        if (fileInput.current) fileInput.current.value = "";
+      }
     }
   };
 
@@ -115,7 +120,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
       </div>
 
       <div className="space-y-5">
-        <input ref={fileInput} aria-label="Upload PDF or image" type="file" accept="application/pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,.pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
+        <input ref={fileInput} aria-label="Upload PDF or image" type="file" accept="application/pdf,image/png,image/jpeg,image/webp,image/bmp,.pdf,.png,.jpg,.jpeg,.webp,.bmp" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
         <div onDragOver={(event) => { event.preventDefault(); setDragActive(true); }} onDragLeave={() => setDragActive(false)} onDrop={(event) => {
           event.preventDefault(); setDragActive(false); void loadFile(event.dataTransfer.files?.[0]);
         }} className={`border border-dashed p-4 transition-colors ${dragActive ? "border-primary bg-primary/5" : "border-border"}`}>
@@ -126,7 +131,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
           {isImporting && <p role="status" className="mt-3 flex items-center gap-2 font-mono text-[10px] text-primary"><LoaderCircle className="h-3 w-3 animate-spin" />{progress?.phase === "ocr" ? "Running on-device OCR" : "Reading document"}{progress ? ` · page ${progress.page} of ${progress.pageCount}` : "…"}</p>}
           {importError && <p role="alert" className="mt-3 flex items-center gap-2 font-mono text-[10px] text-destructive"><AlertCircle className="h-3 w-3" />{importError}</p>}
           {source?.pages.some((page) => page.isOCR && page.confidence < documentImportLimits.lowConfidence) && <div role="status" className="mt-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 font-mono text-[10px] text-amber-600">Low OCR confidence on page(s) {source.pages.filter((page) => page.isOCR && page.confidence < documentImportLimits.lowConfidence).map((page) => `${page.page} (${Math.round(page.confidence)}%)`).join(", ")}. Check and edit the extracted text before analysis.</div>}
-          <p className="mt-3 font-mono text-[9px] text-muted-foreground">Privacy: PDF/image bytes stay in this browser.</p>
+          <p className="mt-3 font-mono text-[9px] text-muted-foreground">Privacy: PDF/image bytes stay in this browser. AI assistance sends extracted text for unresolved fields and relevant excerpts and analysis facts for insights and email drafts.</p>
         </div>
         <div>
           <label htmlFor="agreement-text" className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
@@ -184,10 +189,10 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
               </select>
             </div>
             {[
-              { id: "principal", label: "Loan Amount", override: amount, extracted: extractedValues.principalField, set: setAmount, hidden: revolving },
-              { id: "rate", label: extractedValues.interestRateIsConditional ? "Conditional Deferred APR (%)" : "Interest Rate (%)", override: rate, extracted: extractedValues.rateField, set: setRate, hidden: false },
-              { id: "term", label: "Duration (months)", override: duration, extracted: extractedValues.termField, set: setDuration, hidden: revolving },
-            ].filter((field) => !field.hidden).map((field) => (
+              { id: "principal", label: "Loan Amount", override: amount, extracted: extractedValues.principalField, set: setAmount, notApplicable: revolving },
+              { id: "rate", label: extractedValues.interestRateIsConditional ? "Conditional Deferred APR (%)" : "Interest Rate (%)", override: rate, extracted: extractedValues.rateField, set: setRate, notApplicable: false },
+              { id: "term", label: "Duration (months)", override: duration, extracted: extractedValues.termField, set: setDuration, notApplicable: revolving },
+            ].map((field) => (
               <div key={field.id}>
                 <label htmlFor={`agreement-${field.id}`} className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
                   {field.label}
@@ -197,18 +202,19 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
                   type="number"
                   step="any"
                   min={field.id === "rate" ? 0 : Number.MIN_VALUE}
-                  value={field.override ?? (!extracting && !field.extracted.needsReview ? field.extracted.value ?? "" : "")}
+                  disabled={field.notApplicable}
+                  value={field.notApplicable ? "" : field.override ?? (!extracting && !field.extracted.needsReview ? field.extracted.value ?? "" : "")}
                   onChange={(e) => { onInputChange?.(); field.set(e.target.value); }}
-                  placeholder={!extracting && field.extracted.needsReview ? "Unverified — check evidence" : "Auto-extract"}
-                  className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors"
+                  placeholder={field.notApplicable ? "Not applicable" : !extracting && field.extracted.needsReview ? "Unverified — check evidence" : "Auto-extract"}
+                  className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                 />
-                {field.override !== null ? <button type="button" className="mt-1 font-mono text-[9px] text-primary" onClick={() => { onInputChange?.(); field.set(null); }}>Use automatic extraction</button>
+                {field.notApplicable ? <p className="mt-1 font-mono text-[9px] text-muted-foreground">Revolving credit has no fixed principal or loan term.</p>
+                  : field.override !== null ? <button type="button" className="mt-1 font-mono text-[9px] text-primary" onClick={() => { onInputChange?.(); field.set(null); }}>Use automatic extraction</button>
                   : !extracting && field.extracted.needsReview ? <p className="mt-1 font-mono text-[9px] text-amber-600">Unverified{field.extracted.alternatives.length ? ` · candidates: ${[...new Set(field.extracted.alternatives.map((candidate) => candidate.value))].slice(0, 4).join(", ")}` : " · check the document"}</p> : null}
               </div>
             ))}
           </div>
           {invalidOverrides && <p role="alert" className="mt-2 font-mono text-[10px] text-destructive">Enter a positive amount and duration, and a rate of zero or greater.</p>}
-          {revolving && <p className="mt-2 font-mono text-[10px] text-muted-foreground">Revolving credit has no fixed loan principal or repayment term.</p>}
         </div>
 
         <div className="flex flex-wrap gap-3 pt-2">

@@ -122,9 +122,12 @@ describe("Round-four AI grounding", () => {
     expect(result.aiCounterOfferEmail).toContain("data-sharing permission");
     expect(result.aiCounterOfferEmail).not.toContain("9,876");
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(url).toBe("/.netlify/functions/openrouter");
     const request = JSON.parse(options.body);
-    expect(request.model).toBe("openai/gpt-4o-mini");
+    expect(request).not.toHaveProperty("model");
+    expect(options.headers).not.toHaveProperty("Authorization");
+    expect(options.body).not.toContain("mock-key");
+    expect(request.max_tokens).toBeGreaterThan(1200);
     expect(request.messages[0].content).toContain("TYPE");
     expect(request.messages[0].content).toContain("BASIS");
     expect(options.body).not.toContain("PRIVATE UNRELATED");
@@ -141,5 +144,42 @@ describe("Round-four AI grounding", () => {
     const email = await regenerateCounterOfferEmail(context(true));
     expect(email).toContain("data-sharing permission");
     expect(email).not.toContain("9,876");
+  });
+
+  it("allows negotiating a unilateral rate clause even when the initial rate is verified", () => {
+    const baseline = context(true);
+    const result = validateAIEnhancement({ ...baseline, findings: [finding({
+      id: "unilateral_rate", label: "Unilateral interest rate changes", category: "unilateral_terms",
+      evidence: "The lender may change the interest rate at its discretion.",
+    })] }, { counterOfferEmail: "Dear [Lender Name],\n1. Please remove unilateral interest rate changes and require written consent.\n[My Name]" });
+    expect(result.aiCounterOfferEmail).toContain("Please remove unilateral interest rate changes");
+  });
+
+  it("keeps useful insights and reports why a separate email failed", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ aiInsights: ["Your principal is $12,000."] }) } }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "AI provider credits are exhausted." }), { status: 502 })));
+    const result = await enhanceAnalysisWithAI(context(true));
+    expect(result.aiInsights).toEqual(["Your principal is $12,000."]);
+    expect(result.aiEmailStatus).toBe("unavailable");
+    expect(result.aiEmailError).toContain("credits are exhausted");
+  });
+
+  it("passes each schedule segment separately instead of implying a uniform balloon schedule", () => {
+    const base = context();
+    const source = "Make 11 monthly payments of $50 followed by one final payment of $3,050.";
+    const grounded = buildAIContext({ ...base, installmentSchedule: {
+      count: 12, amount: 50, interval: 1, intervalUnit: "month", total: 3600, totalWithKnownFees: 3600,
+      source, firstPaymentTiming: "one period after agreement", segments: [
+        { count: 11, amount: 50, interval: 1, intervalUnit: "month", total: 550, kind: "regular", source },
+        { count: 1, amount: 3050, interval: 1, intervalUnit: "month", total: 3050, kind: "balloon", source },
+      ],
+    } });
+    expect(grounded.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "installment schedule segment 1 count", value: 11 }),
+      expect.objectContaining({ name: "installment schedule segment 2 amount", value: 3050 }),
+      expect.objectContaining({ name: "sum of scheduled payments", value: 3600, provenance: "computed" }),
+    ]));
+    expect(grounded.facts.some((fact) => fact.name === "installment schedule count")).toBe(false);
   });
 });

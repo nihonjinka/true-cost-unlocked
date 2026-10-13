@@ -42,7 +42,7 @@ Default occurs after 30 days past due. Seller gives notice and 20 days to cure b
     expect(result.termField.value).toBe(60);
     expect(result.statedEMI.value).toBe(364.46);
     expect(result.installmentSchedule?.total).toBeCloseTo(21867.6, 2);
-    expect(result.constraintMismatches ?? []).toEqual([]);
+    expect(result.findings.filter((finding) => finding.category === "mismatch")).toEqual([]);
     expect(result.findings.some((finding) => finding.id === "seizure_without_notice")).toBe(false);
   });
 

@@ -1,14 +1,15 @@
 import type { AIExtractedFields, AnalysisContext, AnalysisFinding, ExtractedField } from "@/lib/analysisContext";
 import rules from "@/data/analysisRules.json";
 
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_MODEL = "openai/gpt-4o-mini";
+const AI_PROXY_URL = "/.netlify/functions/openrouter";
 
 export interface AIEnhancement {
   aiInsights: string[];
   aiNegotiationStrategies: string[];
   aiClausesToReview: string[];
   aiCounterOfferEmail?: string;
+  aiEmailStatus?: "ready" | "partial" | "unavailable" | "not-needed";
+  aiEmailError?: string;
 }
 
 type Provenance = "stated-in-document" | "computed" | "derived" | "assumed";
@@ -38,16 +39,12 @@ const SYSTEM_PROMPT = [
   "Quote clauses only verbatim from the supplied evidence. Use only supplied numbers. Do not invent terms, names, fees, legal rights, or definitive legal conclusions.",
   "The deterministic score and numbers are authoritative. Claim a contradiction only for a supplied mismatch/contradiction finding.",
   "Negotiation, clauses to review, and email may reference only actionable findings (severity at least 2) or unresolved fields. If none exist, return empty action sections and no email.",
-  "Email names must use [My Name] and [Lender Name]. Do not ask for information already resolved. Keep all observations concise.",
+  "Email names must use [My Name] and [Lender Name]. Do not ask for information already resolved. A known rate or amount may still be discussed when an actionable finding concerns changing it. Address every actionable issue with a distinct request, using bullet points rather than numbered lists.",
 ].join(" ");
 
 export function isAIEnhancementConfigured(): boolean {
-  return Boolean(import.meta.env.VITE_OPENROUTER_API_KEY?.trim());
-}
-
-function getApiKey(): string | undefined {
-  const key = import.meta.env.VITE_OPENROUTER_API_KEY?.trim();
-  return key || undefined;
+  // Credentials live on the server. Missing credentials produce a visible API error.
+  return import.meta.env.VITE_PUBLIC_AI_ENABLED !== "false";
 }
 
 function extractMessageContent(payload: unknown): string {
@@ -60,11 +57,9 @@ function extractMessageContent(payload: unknown): string {
   return "";
 }
 
-interface AIRequestOptions { signal?: AbortSignal }
+interface AIRequestOptions { signal?: AbortSignal; maxTokens?: number }
 
 async function requestOpenRouter(messages: Array<{ role: "system" | "user"; content: string }>, json = false, options: AIRequestOptions = {}): Promise<string> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("OpenRouter is not configured.");
   const config = (rules as unknown as { aiExtraction?: { request?: { timeoutMs?: number; maxAttempts?: number; retryDelayMs?: number } } }).aiExtraction?.request;
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -83,19 +78,17 @@ async function requestOpenRouter(messages: Array<{ role: "system" | "user"; cont
     let response: Response | undefined;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (controller.signal.aborted) throw new DOMException("Request cancelled", "AbortError");
-      response = await fetch(OPENROUTER_API_URL, {
+      response = await fetch(AI_PROXY_URL, {
       signal: controller.signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
         ...(json ? { response_format: { type: "json_object" } } : {}),
         messages,
         temperature: 0.2,
-        max_tokens: json ? 1200 : 900,
+        max_tokens: options.maxTokens ?? (json ? 2400 : 3600),
       }),
     });
 
@@ -103,8 +96,13 @@ async function requestOpenRouter(messages: Array<{ role: "system" | "user"; cont
       if ((response.status !== 429 && response.status !== 503) || attempt === attempts - 1) break;
       await waitForRetry((config?.retryDelayMs ?? 800) * (attempt + 1));
     }
-    if (!response?.ok) throw new Error(`OpenRouter request failed with status ${response?.status ?? "unknown"}.`);
-    const content = extractMessageContent(await response.json());
+    if (!response?.ok) {
+      const failure = await response?.json().catch(() => null) as { error?: unknown } | null;
+      throw new Error(typeof failure?.error === "string" ? failure.error : `AI request failed with status ${response?.status ?? "unknown"}.`);
+    }
+    const payload = await response.json();
+    if (payload?.choices?.[0]?.finish_reason === "length") throw new Error("AI response was cut short. Please retry the draft.");
+    const content = extractMessageContent(payload);
     if (!content) throw new Error("OpenRouter returned an empty response.");
     return content;
   } catch (error) {
@@ -179,9 +177,9 @@ export function buildAIContext(context: AnalysisContext): AIContext {
       ...(sourceIsEvidence ? { evidence: field.source } : {}),
     });
   };
-  addField(FIELD_NAMES.principal, context.principalField);
+  if (context.docType.type !== "credit_card") addField(FIELD_NAMES.principal, context.principalField);
   addField(FIELD_NAMES.rate, context.rateField, context.rateField.rateRole === "implied" ? "derived" : undefined);
-  addField(FIELD_NAMES.term, context.termField, context.installmentSchedule ? "derived" : undefined);
+  if (context.docType.type !== "credit_card") addField(FIELD_NAMES.term, context.termField, context.installmentSchedule ? "derived" : undefined);
   // A calculated installment is sufficient; an absent separately stated EMI is not an unresolved issue.
   if (context.statedEMI.value !== null) addField(FIELD_NAMES.payment, context.statedEMI);
   const addFact = (name: string, value: number | string | null, provenance: Provenance = "computed") => {
@@ -198,14 +196,21 @@ export function buildAIContext(context: AnalysisContext): AIContext {
   addFact("calculated installment payment", context.emi);
   addFact("total payment", context.totalPayment);
   addFact("total interest", context.totalInterest);
+  addFact("stated total of payments", context.statedTotalPayments ?? null, "stated-in-document");
+  addFact("stated finance charge", context.statedFinanceCharge ?? null, "stated-in-document");
   addFact("effective APR", context.effectiveAPR);
   addFact("net disbursed amount", context.netDisbursed);
   for (const [name, value] of Object.entries(context.costBreakdown)) addFact(`cost breakdown ${name.replace(/([A-Z])/g, " $1").toLowerCase()}`, value);
   if (context.installmentSchedule) {
-    const { count, amount, interval, intervalUnit, source } = context.installmentSchedule;
-    for (const [name, value] of Object.entries({ count, amount, interval, intervalUnit })) {
-      facts.push({ name: `installment schedule ${name}`, value, provenance: "stated-in-document", evidence: source });
+    const schedule = context.installmentSchedule;
+    const segments = schedule.segments?.length ? schedule.segments : [schedule];
+    for (const [index, segment] of segments.entries()) {
+      const { count, amount, interval, intervalUnit, source } = segment;
+      for (const [name, value] of Object.entries({ count, amount, interval, intervalUnit })) {
+        facts.push({ name: `installment schedule segment ${index + 1} ${name}`, value, provenance: "stated-in-document", evidence: source });
+      }
     }
+    addFact("sum of scheduled payments", schedule.total);
   }
   const projectFinding = ({ id, label, category, severity, polarity, clauseSpan, evidence, conditions, provenance, amount, percent, totalImpact, mergedRuleIds, components }: AnalysisFinding): AIFinding => ({
     id, label, category, severity, polarity, clauseSpan, evidence, conditions, provenance, amount, percent,
@@ -271,7 +276,7 @@ export function validateAIEnhancement(context: AnalysisContext, payload: unknown
   const mismatch = grounded.findings.filter((finding) => /mismatch|contradiction/.test(`${finding.id} ${finding.category} ${(finding.mergedRuleIds ?? []).join(" ")}`));
   const protectedTopics = grounded.protections.map((finding) => `${finding.id} ${finding.label}`);
   const resolvedTopics = grounded.facts.filter((fact) => fact.provenance !== "assumed" && !grounded.unresolvedFields.includes(fact.name)).map((fact) => fact.name);
-  const actionTopics = [...grounded.unresolvedFields, ...grounded.findings.filter((finding) => finding.severity >= 2).flatMap((finding) => [`${finding.id} ${finding.label}`, ...(finding.mergedRuleIds ?? [])])];
+  const actionTopics = [...grounded.unresolvedFields, ...grounded.findings.filter((finding) => finding.severity >= 2).flatMap((finding) => [`${finding.id} ${finding.label}`, ...(finding.mergedRuleIds ?? []), ...(finding.components ?? []).map((component) => `${component.id} ${component.label}`)])];
   const knownTopics = [...grounded.facts.map((fact) => fact.name), ...allFindings.flatMap((finding) => [`${finding.id} ${finding.label}`, ...(finding.mergedRuleIds ?? [])])];
   const actionable = actionTopics.length > 0;
   const validSentence = (sentence: string, action: boolean): boolean => {
@@ -290,7 +295,7 @@ export function validateAIEnhancement(context: AnalysisContext, payload: unknown
       (sharesTopic(sentence, [fact.name]) && typeof fact.value === "number" && numericTokens(sentence).includes(String(Number(fact.value.toFixed(2)))))
     ))) return false;
     const asks = action || /\?|\b(?:ask|clarify|confirm|request|negotiate|waive|remove|review|scrutinize)\b/i.test(sentence);
-    if (asks && (sharesTopic(sentence, protectedTopics) || sharesTopic(sentence, resolvedTopics))) return false;
+    if (asks && !sharesTopic(sentence, actionTopics) && (sharesTopic(sentence, protectedTopics) || sharesTopic(sentence, resolvedTopics))) return false;
     if (action && !sharesTopic(sentence, actionTopics)) return false;
     return true;
   };
@@ -301,7 +306,7 @@ export function validateAIEnhancement(context: AnalysisContext, payload: unknown
   const emailValue = parsed.counterOfferEmail ?? parsed.aiCounterOfferEmail;
   let email = "";
   if (actionable && typeof emailValue === "string") {
-    const lines = emailValue.trim().slice(0, 3000).split(/\n+/).map((line) => line.trim());
+    const lines = emailValue.trim().slice(0, 16000).split(/\n+/).map((line) => line.trim().replace(/^\d+[.)]\s+/, ""));
     let bodyCount = 0;
     email = lines.flatMap((line) => {
       if (/^(?:dear|hello|hi|regards|sincerely|thank you|thanks|best|\[My Name\]|\[Lender Name\])(?:\b|,|\]|$)/i.test(line) && !numericTokens(line).length && line.length < 65) return [line];
@@ -313,38 +318,67 @@ export function validateAIEnhancement(context: AnalysisContext, payload: unknown
   }
   return {
     aiInsights: validateList(parsed.aiInsights, 5, false),
-    aiNegotiationStrategies: actionable ? validateList(parsed.aiNegotiationStrategies, 4, true) : [],
-    aiClausesToReview: actionable ? validateList(parsed.aiClausesToReview, 4, true) : [],
+    aiNegotiationStrategies: actionable ? validateList(parsed.aiNegotiationStrategies, 40, true) : [],
+    aiClausesToReview: actionable ? validateList(parsed.aiClausesToReview, 40, true) : [],
     ...(email ? { aiCounterOfferEmail: email } : {}),
   };
+}
+
+function emailCoverage(context: AnalysisContext, email = ""): string[] {
+  const grounded = buildAIContext(context);
+  const issues = [...grounded.unresolvedFields, ...grounded.findings.filter((finding) => finding.severity >= 2)
+    .flatMap((finding) => [finding.label, ...(finding.components ?? []).map((component) => component.label)])];
+  return [...new Set(issues)].filter((issue) => !sharesTopic(email, [issue]));
+}
+
+function emailStatus(context: AnalysisContext, email?: string): Pick<AIEnhancement, "aiEmailStatus" | "aiEmailError"> {
+  if (!hasActionableFindings(context)) return { aiEmailStatus: "not-needed" };
+  if (!email) return { aiEmailStatus: "unavailable", aiEmailError: "The provider returned no grounded email draft. Choose NEW DRAFT to retry." };
+  const missing = emailCoverage(context, email);
+  return missing.length ? { aiEmailStatus: "partial", aiEmailError: `This draft does not cover: ${missing.join("; ")}. Choose NEW DRAFT to retry.` } : { aiEmailStatus: "ready" };
+}
+
+function responseBudget(context: AnalysisContext): number {
+  const grounded = buildAIContext(context);
+  return Math.min(8000, 2400 + 240 * (grounded.findings.length + grounded.unresolvedFields.length));
 }
 
 export async function enhanceAnalysisWithAI(context: AnalysisContext, options: AIRequestOptions = {}): Promise<AIEnhancement> {
   if (!isAIEnhancementConfigured()) return { ...EMPTY_ENHANCEMENT };
   const response = await requestOpenRouter([
-    { role: "system", content: `${SYSTEM_PROMPT} Return valid JSON only, with aiInsights (up to 5), aiNegotiationStrategies (up to 4), aiClausesToReview (up to 4), and counterOfferEmail.` },
+    { role: "system", content: `${SYSTEM_PROMPT} Return valid JSON only, with aiInsights (up to 5), aiNegotiationStrategies (one per issue, max 40), aiClausesToReview (one per issue, max 40), and counterOfferEmail. The email must address EVERY actionable finding and unresolved field with a specific requested improvement for each. Avoid generic requests to review the agreement.` },
     { role: "user", content: JSON.stringify(buildAIContext(context)) },
-  ], true, options);
+  ], true, { ...options, maxTokens: responseBudget(context) });
   const parsed = parseJsonObject(response);
   if (!parsed) throw new Error("OpenRouter returned an unreadable insights response.");
   const enhancement = validateAIEnhancement(context, parsed);
-  if (hasActionableFindings(context) && !enhancement.aiCounterOfferEmail) {
+  if (hasActionableFindings(context) && (!enhancement.aiCounterOfferEmail || emailCoverage(context, enhancement.aiCounterOfferEmail).length)) {
     try {
       const email = await regenerateCounterOfferEmail(context, options);
       if (email) enhancement.aiCounterOfferEmail = email;
-    } catch {
-      // Keep the verified insights available when a separate email draft fails.
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      return { ...enhancement, ...emailStatus(context, enhancement.aiCounterOfferEmail),
+        aiEmailError: `Email generation failed: ${error instanceof Error ? error.message : "Please retry."}` };
     }
   }
-  return enhancement;
+  return { ...enhancement, ...emailStatus(context, enhancement.aiCounterOfferEmail) };
+}
+
+export async function generateCounterOfferDraft(context: AnalysisContext, options: AIRequestOptions = {}): Promise<Pick<AIEnhancement, "aiCounterOfferEmail" | "aiEmailStatus" | "aiEmailError">> {
+  if (!hasActionableFindings(context)) return { aiEmailStatus: "not-needed" };
+  const response = await requestOpenRouter([
+    { role: "system", content: `${SYSTEM_PROMPT} Write a specific, professional negotiation email to the provider. Address EVERY actionable finding and unresolved field in the supplied context; do not skip issues. For each issue, name the concern, explain the practical change requested, and ask the provider to confirm revised terms in writing. Include concrete improvements such as removing or capping a fee, narrowing a broad default trigger, making a rate fixed or changes require written consent, or clarifying an unresolved term only when that issue appears in the context. Use only facts and amounts supplied; never invent a target rate, legal right, fee, or promise. Consider documented protections so you do not ask to change terms already favorable to the borrower. Use a courteous but firm tone, with greeting, concise issue-by-issue requests, and sign-off. Return the complete email only.` },
+    { role: "user", content: `Draft from this verified analysis. The findings and unresolved fields are the complete issue checklist; make a distinct request for each actionable item.\n<analysis_context>\n${JSON.stringify(buildAIContext(context))}\n</analysis_context>` },
+  ], false, { ...options, maxTokens: responseBudget(context) });
+  const email = validateAIEnhancement(context, { counterOfferEmail: response }).aiCounterOfferEmail;
+  return { ...(email ? { aiCounterOfferEmail: email } : {}), ...emailStatus(context, email) };
 }
 
 export async function regenerateCounterOfferEmail(context: AnalysisContext, options: AIRequestOptions = {}): Promise<string> {
   if (!hasActionableFindings(context)) return NO_NEGOTIATION_ISSUES;
-  const response = await requestOpenRouter([
-    { role: "system", content: `${SYSTEM_PROMPT} Write a specific, professional negotiation email to the provider. Address EVERY actionable finding and unresolved field in the supplied context; do not skip issues. For each issue, name the concern, explain the practical change requested, and ask the provider to confirm revised terms in writing. Include concrete improvements such as removing or capping a fee, narrowing a broad default trigger, making a rate fixed or changes require written consent, or clarifying an unresolved term only when that issue appears in the context. Use only facts and amounts supplied; never invent a target rate, legal right, fee, or promise. Consider documented protections so you do not ask to change terms already favorable to the borrower. Use a courteous but firm tone, with greeting, concise issue-by-issue requests, and sign-off. Return the complete email only.` },
-    { role: "user", content: `Draft from this verified analysis. The findings and unresolved fields are the complete issue checklist; make a distinct request for each actionable item.\n<analysis_context>\n${JSON.stringify(buildAIContext(context))}\n</analysis_context>` },
-  ], false, options);
-  return validateAIEnhancement(context, { counterOfferEmail: response }).aiCounterOfferEmail ?? "";
+  const draft = await generateCounterOfferDraft(context, options);
+  if (!draft.aiCounterOfferEmail) throw new Error(draft.aiEmailError);
+  return draft.aiCounterOfferEmail;
 }
 

@@ -59,7 +59,6 @@ export function countedSchedules(text: string): CountedSchedule[] {
     const count = parseWrittenNumber(match[1]);
     if (!count || !Number.isInteger(count) || count > config.maximumCount || (match[2] && Number(match[2]) !== count)) continue;
     const start = match.index!;
-    const left = Math.max(text.lastIndexOf("\n", start), text.lastIndexOf(";", start), text.lastIndexOf(". ", start)) + 1;
     const tail = text.slice(start, start + config.maximumFrequencyDistance);
     const boundary = tail.search(/[;\n]|[.!?](?=\s+[A-Z]|$)/);
     const end = start + (boundary < 0 ? tail.length : boundary);
@@ -84,6 +83,25 @@ export function countedSchedules(text: string): CountedSchedule[] {
     const frequency = frequencies[0] ?? null;
     const sourceEnd = frequency ? frequency.position + frequency.source.length : match[0].length;
     matches.push({ count, frequency, position, months: frequency ? count * frequency.months : null, source: window.slice(0, sourceEnd) });
+  }
+  const durationPattern = config.durationSchedulePattern;
+  if (durationPattern) {
+    const pattern = durationPattern.split("{{NUMBER}}").join(NUMBER_PATTERN).split("{{UNIT}}").join(UNIT_PATTERN);
+    for (const match of text.matchAll(new RegExp(pattern, "gi"))) {
+      const duration = parseWrittenNumber(match.groups?.count ?? "");
+      const durationUnit = unitSpec(match.groups?.unit ?? "");
+      const local = match[0];
+      const frequency = frequenciesIn(local)[0] ?? null;
+      if (!duration || !durationUnit || !frequency || duration <= 0) continue;
+      if (new RegExp(config.nonTermPattern, "i").test(local)) continue;
+      const periods = duration * durationUnit.months / frequency.months;
+      const count = Math.round(periods);
+      if (!Number.isInteger(count) || count <= 0 || count > config.maximumCount
+        || Math.abs(periods - count) > config.countRoundingTolerance) continue;
+      const position = match.index!;
+      if (matches.some((entry) => Math.abs(entry.position - position) < 18 && entry.frequency?.unit === frequency.unit)) continue;
+      matches.push({ count, frequency, source: local, position, months: count * frequency.months });
+    }
   }
   return matches;
 }

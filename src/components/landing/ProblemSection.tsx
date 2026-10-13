@@ -1,13 +1,13 @@
 import { motion } from "framer-motion";
 import React, { useState } from "react";
 
-const problems = [
+const problems: Array<{ code: string; title: string; desc: string }> = [
   { code: "ERR_01", title: "Hidden Fee Structures", desc: "Buried in pages of legal text, fees silently inflate your true cost by 15-40%." },
   { code: "ERR_02", title: "Manipulative Clauses", desc: "Penalty APRs, indefinite terms, and unilateral change clauses trap borrowers." },
   { code: "ERR_03", title: "Opaque Calculations", desc: "Complex interest compounding obscures the real repayment amount you'll pay." },
 ];
 
-function ProblemCard({ p, i }: { p: any; i: number }) {
+function ProblemCard({ p, i }: { p: (typeof problems)[number]; i: number }) {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isHovering, setIsHovering] = useState(false);
 

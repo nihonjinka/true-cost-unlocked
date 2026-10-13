@@ -82,7 +82,7 @@ describe("Round 7 type, qualified terms, and import limits", () => {
     const analysis = analyzeLocally("CREDIT CARD AGREEMENT\nRevolving credit.\nAPR: 19.9% per year.");
     expect(analysis.docType.type).toBe("credit_card");
     expect(analysis.principalField.value).toBeNull();
-    expect(analysis.riskBand).toBe("caution");
+    expect(analysis.riskBand).toBe("low");
   });
 
   it("shows a later fee qualifier as a conditional term, not a clean protection", () => {

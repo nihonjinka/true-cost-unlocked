@@ -16,7 +16,13 @@ vi.mock("@/lib/analyzeWithAI", async (original) => ({ ...await original<typeof i
   isAIEnhancementConfigured: mocks.configured, enhanceAnalysisWithAI: mocks.enhance, extractFieldsWithAI: mocks.extract,
 }));
 vi.mock("@/components/ThemeToggle", () => ({ ThemeToggle: () => null }));
-vi.mock("@/components/AnalysisPanels", () => ({ AnalysisPanels: ({ context }: { context: AnalysisContext }) => createElement("output", { "data-testid": "analysis" }, context.rawText) }));
+vi.mock("@/components/AnalysisPanels", () => ({ AnalysisPanels: ({ context, aiEnhancementStatus, onPrincipalSelect, onRetryAI }: {
+  context: AnalysisContext; aiEnhancementStatus: string; onPrincipalSelect: (value: number) => void; onRetryAI: () => void;
+}) => createElement("section", null,
+  createElement("output", { "data-testid": "analysis" }, context.rawText),
+  createElement("output", { "data-testid": "ai-state" }, `${aiEnhancementStatus}: ${(context.aiInsights ?? []).join(" ")}`),
+  createElement("button", { onClick: () => onPrincipalSelect(7000) }, "Confirm principal"),
+  createElement("button", { onClick: onRetryAI }, "Retry AI")) }));
 
 const emptyFields: AIExtractedFields = { principal: { value: null, evidence: null }, annualAPR: { value: null, evidence: null }, termMonths: { value: null, evidence: null }, payment: { value: null, evidence: null } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
@@ -48,11 +54,11 @@ describe("input extraction and document isolation", () => {
     expect(amount).toHaveValue(12000);
   });
 
-  it("does not show fixed principal and term inputs for revolving credit", async () => {
+  it("keeps principal and term visible but disabled for revolving credit", async () => {
     render(createElement(AnalysisInput, { onAnalyze: vi.fn(), isLoading: false }));
     paste("CREDIT CARD AGREEMENT. Revolving credit. APR: 19.9% per year.");
-    await waitFor(() => expect(screen.queryByRole("spinbutton", { name: "Loan Amount" })).toBeNull());
-    expect(screen.queryByRole("spinbutton", { name: "Duration (months)" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "Loan Amount" })).toBeDisabled());
+    expect(screen.getByRole("spinbutton", { name: "Duration (months)" })).toBeDisabled();
     expect(screen.getByRole("spinbutton", { name: "Interest Rate (%)" })).toHaveValue(19.9);
   });
 
@@ -109,6 +115,42 @@ describe("input extraction and document isolation", () => {
     expect(mocks.enhance).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /^analyze$/i })).toBeEnabled();
   });
+
+  it("keeps a manual principal confirmation when an older extraction finishes", async () => {
+    const extraction = deferred<AIExtractedFields>();
+    mocks.configured.mockReturnValue(true); mocks.extract.mockReturnValueOnce(extraction.promise);
+    mountPage(); paste("Personal loan. Fixed APR: 6%. Repayment term: 24 months."); analyze();
+    expect(mocks.extract).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm principal" }));
+    expect((mocks.extract.mock.calls[0][1].signal as AbortSignal).aborted).toBe(true);
+    await waitFor(() => expect(screen.getByTestId("ai-state")).toHaveTextContent("ready"));
+    await act(async () => extraction.resolve({ ...emptyFields, principal: { value: 3000, evidence: "irrelevant obsolete value" } }));
+    expect(mocks.enhance).toHaveBeenCalledOnce();
+    expect((mocks.enhance.mock.calls[0][0] as AnalysisContext).principalField.value).toBe(7000);
+  });
+
+  it("retries insights without recomputing local findings and ignores the older response", async () => {
+    const old = deferred<object>();
+    mocks.configured.mockReturnValue(true);
+    mocks.enhance.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ aiInsights: ["Current insight"], aiNegotiationStrategies: [], aiClausesToReview: [] });
+    mountPage(); paste(CLEAN_LOAN); analyze();
+    const priorSignal = mocks.enhance.mock.calls[0][1].signal as AbortSignal;
+    fireEvent.click(screen.getByRole("button", { name: "Retry AI" }));
+    expect(priorSignal.aborted).toBe(true);
+    await waitFor(() => expect(screen.getByTestId("ai-state")).toHaveTextContent("ready: Current insight"));
+    await act(async () => old.resolve({ aiInsights: ["Obsolete insight"] }));
+    expect(screen.getByTestId("ai-state")).toHaveTextContent("ready: Current insight");
+    expect(screen.getByTestId("analysis")).toHaveTextContent("Loan");
+    expect(mocks.enhance.mock.calls[1][0].id).toBe(mocks.enhance.mock.calls[0][0].id);
+  });
+
+  it("requests insights for a card without trying to replace a verified purchase APR", async () => {
+    mocks.configured.mockReturnValue(true);
+    mountPage(); paste("Credit card agreement. Revolving credit. Purchase APR: 18.9% per annum."); analyze();
+    await waitFor(() => expect(mocks.enhance).toHaveBeenCalledOnce());
+    expect(mocks.extract).not.toHaveBeenCalled();
+    expect(mocks.enhance.mock.calls[0][0].rateField.value).toBe(18.9);
+  });
 });
 
 describe("bounded optional OpenRouter requests", () => {
@@ -144,5 +186,18 @@ describe("bounded optional OpenRouter requests", () => {
     const context = api.buildAIContext({ ...local, principalField: { ...local.principalField, needsReview: true } });
     expect(context.facts.some((fact) => fact.name === "principal loan amount")).toBe(false);
     expect(context.unresolvedFields).toContain("principal loan amount");
+  });
+
+  it("retries a transient proxy failure and returns the successful provider response", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Provider busy" }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(emptyFields) } }] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = await vi.importActual<typeof import("@/lib/analyzeWithAI")>("@/lib/analyzeWithAI");
+    const pending = api.extractFieldsWithAI("Principal: $4,000.");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(await pending).toEqual(emptyFields);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

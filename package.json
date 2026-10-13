@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "evaluate": "vitest run src/test/evaluationHarness.test.ts --reporter=verbose",
+    "evaluate:uploads": "node scripts/evaluate-uploads.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

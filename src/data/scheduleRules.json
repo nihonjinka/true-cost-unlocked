@@ -22,12 +22,13 @@
   "paymentLabelPattern": "(?:scheduled|regular|monthly|weekly|daily|fortnightly)?\\s*(?:repayments?|payments?|installments?|instalments?|EMIs?|remittances?|debits?)",
   "countLabelPattern": "(?:number|no\\.?|count)\\s+(?:of\\s+)?(?:payments?|installments?|instalments?|repayments?)",
   "paymentTimingPattern": "due|payable|repay|payment|installment|instalment|remittance|debit",
-  "countModifierPattern": "equal|interest[- ]free|fixed|scheduled|consecutive|regular|monthly|weekly|daily|bi[- ]?weekly|fortnightly|quarterly|semi[- ]?monthly|annual(?:ly)?|yearly",
+  "durationSchedulePattern": "\\b(?:pay(?:ment)?|repay(?:ment)?|remit(?:tance)?|debit)\\b[^.;]{0,100}\\b(?:daily|weekly|monthly|fortnightly|every\\s+(?:\\d+\\s+)?(?:days?|weeks?|months?))\\b[^.;]{0,60}\\b(?:for|over)\\s+(?<count>{{NUMBER}})\\s*(?<unit>{{UNIT}})\\b",
+  "countModifierPattern": "equal|interest[- ]free|fixed|scheduled|consecutive|regular|final|balloon|interest[- ]only|monthly|weekly|daily|bi[- ]?weekly|fortnightly|quarterly|semi[- ]?monthly|annual(?:ly)?|yearly",
   "explicitTermPattern": "(?:loan|repayment|contract(?:ual)?)\\s+(?:term|period|duration)|term|tenure|tenor|duration|maturity",
   "termConnectorPattern": "for|over|within",
   "nonTermPattern": "grace|late|overdue|cure|cancel(?:lation)?|cooling[- ]off|withdraw|rescind|opt[- ]out|notice|notify|trial|promo(?:tional)?|introductory|teaser|offer\\s+expires?",
   "nonTermDurationRoles": [
-    { "role": "grace", "pattern": "grace|late(?:\\s+(?:fee|charge|payment))?|overdue|delinquen(?:t|cy)|past[- ]due|default", "priority": 50 },
+    { "role": "grace", "pattern": "\\bgrace\\b|\\blate(?:\\s+(?:fee|charge|payment))?|overdue|delinquen(?:t|cy)|past[- ]due|default", "priority": 50 },
     { "role": "cure", "pattern": "\\bcure\\b|remedy\\s+(?:a\\s+)?(?:breach|default)", "priority": 60 },
     { "role": "cancellation", "pattern": "cancel(?:lation)?|cooling[- ]off|withdraw|rescind|opt[- ]out|prepay(?:ment)?", "priority": 55 },
     { "role": "notice", "pattern": "\\bnotice\\b|notify|notification", "priority": 45 },
@@ -44,6 +45,32 @@
   "maximumCount": 12000,
   "countRoundingTolerance": 0.015,
   "totalRelativeTolerance": 0.001,
+  "cashflows": {
+    "maximumPayments": 12000,
+    "roundingPerPayment": 0.01,
+    "nonAmortizingPattern": "\\b(?:interest[- ]only|balloon|bullet|lump[- ]sum)\\b|\\b(?:one|single|final)\\s+(?:final\\s+)?(?:payment|repayment)\\b",
+    "deductedPattern": "\\b(?:deduct(?:ed|ion)?|withheld|retain(?:ed|s|ing)?|netted)\\b[^.;]{0,65}\\b(?:proceeds|disbursement|disbursal|advance|principal|loan|amount)\\b|\\b(?:proceeds|disbursement|disbursal)\\b[^.;]{0,50}\\b(?:less|net\\s+of)\\b",
+    "netProceedsPattern": "\\b(?:net\\s+(?:proceeds|disbursement|disbursal)|(?:amount|cash|funds)\\s+(?:paid|disbursed|released|advanced)\\s+to\\s+(?:the\\s+)?borrower)\\s*(?::|is|of|=)?\\s*(?:US\\$|[$₹€£¥]|USD|INR|EUR|GBP|Rs\\.?)?\\s*(?<amount>\\d[\\d,]*(?:\\.\\d+)?)",
+    "financedPattern": "\\b(?:financed|rolled\\s+into|added\\s+to|included\\s+in)\\b[^.;]{0,45}\\b(?:principal|balance|loan|amount\\s+financed)\\b|\\bfinanced\\s+(?:fee|premium|insurance|add[- ]?on)\\b",
+    "paidSeparatelyPattern": "\\b(?:paid|payable|due)\\b[^.;]{0,35}\\b(?:separately|upfront|in\\s+cash|at\\s+(?:signing|closing))\\b",
+    "excludedPattern": "\\b(?:no|not|never)\\s+(?:be\\s+)?(?:deducted|withheld|financed|charged|payable)\\b",
+    "eligibleCategories": ["upfront_fee", "financed_addon"],
+    "defaultUpfrontTreatment": "paid_separately"
+  },
+  "adjustableRates": {
+    "resetAfterMonthsPattern": "\\b(?:after|at)\\s+(?<months>\\d+)\\s+months?\\b[^.;]{0,45}\\b(?:adjust|reset|change)\\w*\\b|\\b(?:first|initial)\\s+(?:rate\\s+)?adjustment\\b[^.;]{0,45}\\bafter\\s+(?<monthsAfterReset>\\d+)\\s+months?\\b|\\b(?:rate|interest\\s+rate|apr)\\b[^.;]{0,45}\\b(?:adjust|reset|change)\\w*\\b[^.;]{0,45}\\bafter\\s+(?<monthsAfterRateReset>\\d+)\\s+months?\\b",
+    "firstAdjustmentCapPattern": "\\b(?:first|initial)\\s+(?:rate\\s+)?(?:adjustment|increase)\\b[^;\\n]{0,70}?(?<cap>\\d+(?:\\.\\d+)?)\\s*(?<unit>%|percentage\\s+points?|points?)(?<qualifier>[^;\\n.]{0,40})",
+    "lifetimeCapPattern": "\\b(?:lifetime|maximum|overall)(?:\\s+lifetime)?\\s+(?:rate\\s+)?(?:cap|ceiling|limit|increase)\\b[^;\\n]{0,70}?(?<cap>\\d+(?:\\.\\d+)?)\\s*(?<unit>%|percentage\\s+points?|points?)(?<qualifier>[^;\\n.]{0,40})",
+    "incrementPattern": "percentage\\s+points?|\\bpoints?\\b|above\\s+(?:the\\s+)?(?:initial|starting|original)\\s+(?:rate|apr)|(?:maximum|lifetime)\\s+increase",
+    "absolutePattern": "\\b(?:rate|apr)\\s+(?:cap|ceiling|limit)\\b|\\b(?:maximum|ceiling)\\s+(?:rate|apr)\\b"
+  },
+  "renewals": {
+    "conceptPattern": "\\b(?:renew(?:al|als|ed|ing)?|roll(?:over|overs)?|roll\\s+over|extend(?:ed|s|ing)?|extension|refinanc(?:e|ed|ing))\\b",
+    "permissionPattern": "\\b(?:may|can|permitted|allowed|option|eligible|will|automatically|automatic|on|upon|each)\\b|\\b(?:renewal|extension|rollover)\\s+(?:fee|charge|option)\\b",
+    "denialPattern": "\\b(?:no|not|never|cannot|can't|prohibited|forbidden|unavailable)\\b[^,;]{0,55}\\b(?:renew|renewal|extend|extension|rollover|roll\\s+over|refinance)\\b|\\b(?:renewal|extension|rollover|refinancing)\\b[^,;]{0,35}\\b(?:prohibited|forbidden|unavailable|not\\s+(?:allowed|permitted|available))\\b",
+    "explicitChargePattern": "\\b(?:renewal|extension|rollover)\\s+(?:fee|charge|cost)\\b\\s*(?:is|of|equals|:)?\\s*(?:{{CURRENCY}})\\s*(?<amount>\\d[\\d,]*(?:\\.\\d+)?)",
+    "maximumRenewals": 3
+  },
   "numericFormatting": {
     "decimalCommaMaximumPlaces": 2,
     "moneyContextPattern": "principal|amount|balance|fee|charge|payment|price|deposit|advance|premium",

@@ -1,8 +1,8 @@
 import { motion } from "framer-motion";
-import { FileSearch, Shield, Calculator, Brain } from "lucide-react";
+import { FileSearch, Shield, Calculator, Brain, type LucideIcon } from "lucide-react";
 import React, { useState } from "react";
 
-const modules = [
+const modules: Array<{ id: string; icon: LucideIcon; title: string; desc: string; hasApiTag?: boolean }> = [
   {
     id: "SYS.01",
     icon: FileSearch,
@@ -30,7 +30,7 @@ const modules = [
   },
 ];
 
-function ModuleCard({ mod, i }: { mod: any; i: number }) {
+function ModuleCard({ mod, i }: { mod: (typeof modules)[number]; i: number }) {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isHovering, setIsHovering] = useState(false);
 

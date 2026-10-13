@@ -1,0 +1,21 @@
+{
+  "maxBytes": 20971520,
+  "maxPages": 30,
+  "maxImagePixels": 40000000,
+  "lowConfidence": 65,
+  "ocr": {
+    "language": "eng",
+    "minimumTextCharacters": 20,
+    "minimumRasterPageFraction": 0.15,
+    "renderScale": 2,
+    "maxRenderPixels": 16000000
+  },
+  "layout": {
+    "rowTolerance": 0.55,
+    "minimumRowTolerance": 3,
+    "columnGapFraction": 0.04,
+    "minimumColumnRows": 3,
+    "minimumProseWords": 7,
+    "wordGapFraction": 0.012
+  }
+}

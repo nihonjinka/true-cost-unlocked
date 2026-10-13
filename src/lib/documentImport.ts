@@ -1,154 +1,219 @@
-import type { ImportedSourcePage, SourceBoundingBox, SourceTextSpan } from "./analysisContext";
+import rules from "../data/documentImportRules.json";
+import type { ImportedSourcePage, SourceTextSpan } from "./analysisContext";
+import { joinDocumentFragments, normalizedBox, type DocumentFragment } from "./documentLayout";
 
-export interface DocumentImportResult {
-  text: string;
-  pages: ImportedSourcePage[];
-  spans: SourceTextSpan[];
-}
-
+export interface DocumentImportResult { text: string; pages: ImportedSourcePage[]; spans: SourceTextSpan[] }
 export interface DocumentImportProgress { page: number; pageCount: number; phase: "reading" | "ocr" }
-export interface DocumentImportOptions { onProgress?: (progress: DocumentImportProgress) => void }
+export interface DocumentImportOptions {
+  onProgress?: (progress: DocumentImportProgress) => void;
+  signal?: AbortSignal;
+  /** Optional local assets for offline deployments; document bytes never leave the browser. */
+  ocrAssets?: { workerPath?: string; corePath?: string; langPath?: string };
+}
+type OCRWorker = Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>>;
+type OCRResult = Awaited<ReturnType<OCRWorker["recognize"]>>;
 
-const MAX_BYTES = 20 * 1024 * 1024;
-const MAX_PAGES = 30;
-const LOW_CONFIDENCE = 65;
-const SUPPORTED_IMAGE = /^image\/(?:png|jpeg|webp|tiff|bmp)$/i;
-
-interface Fragment { text: string; x: number; y: number; width: number; height: number; confidence: number; box: SourceBoundingBox }
+function aborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("Document import cancelled.", "AbortError");
+}
 
 function validateFile(file: File): "pdf" | "image" {
-  if (file.size > MAX_BYTES) throw new Error("File is larger than the 20 MB limit.");
-  if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) return "pdf";
-  if (SUPPORTED_IMAGE.test(file.type) || /\.(?:png|jpe?g|webp|tiff?|bmp)$/i.test(file.name)) return "image";
-  throw new Error("Choose a PDF, PNG, JPEG, WebP, TIFF, or BMP file.");
+  if (!file.size) throw new Error("The selected file is empty.");
+  if (file.size > rules.maxBytes) throw new Error("File is larger than the 20 MB limit.");
+  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
+  if (file.type === "image/tiff" || /\.tiff?$/i.test(file.name)) throw new Error("Convert TIFF pages to PDF, PNG, or JPEG before importing; this browser cannot reliably read every TIFF page.");
+  if (/^image\/(?:png|jpeg|webp|bmp)$/i.test(file.type) || /\.(?:png|jpe?g|webp|bmp)$/i.test(file.name)) return "image";
+  throw new Error("Choose a PDF, PNG, JPEG, WebP, or BMP file.");
 }
 
-function joinFragments(fragments: Fragment[], page: number, offset: number, gapThreshold: number): { text: string; spans: SourceTextSpan[] } {
-  const rows: Fragment[][] = [];
-  for (const fragment of [...fragments].sort((a, b) => a.y - b.y || a.x - b.x)) {
-    let row = rows.find((candidate) => Math.abs(candidate[0].y - fragment.y) <= Math.max(3, Math.min(candidate[0].height, fragment.height) * 0.55));
-    if (!row) { row = []; rows.push(row); }
-    row.push(fragment);
-  }
-  rows.sort((a, b) => a[0].y - b[0].y);
-  let text = "";
-  const spans: SourceTextSpan[] = [];
-  for (const row of rows) {
-    row.sort((a, b) => a.x - b.x);
-    let previous: Fragment | null = null;
-    for (const fragment of row) {
-      const gap = previous ? fragment.x - (previous.x + previous.width) : 0;
-      const separator = previous ? gap > gapThreshold ? "\t" : " " : "";
-      text += separator;
-      const start = offset + text.length;
-      text += fragment.text;
-      spans.push({ start, end: offset + text.length, page, box: fragment.box });
-      previous = fragment;
-    }
-    text += "\n";
-  }
-  return { text: text.trimEnd(), spans };
+function withCancellation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  return new Promise((resolve, reject) => {
+    const cancel = () => reject(new DOMException("Document import cancelled.", "AbortError"));
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));
+  });
 }
 
-async function readImage(file: File, pageNumber = 1, onProgress?: DocumentImportOptions["onProgress"]): Promise<DocumentImportResult> {
-  onProgress?.({ page: pageNumber, pageCount: 1, phase: "ocr" });
-  const image = await createImageBitmap(file);
+function createOCRSession(signal?: AbortSignal, assets?: DocumentImportOptions["ocrAssets"]) {
+  let worker: Promise<OCRWorker> | undefined;
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= (async () => { if (worker) await (await worker).terminate(); })();
+  const cancel = () => { void close().catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  return {
+    async recognize(canvas: HTMLCanvasElement) {
+      aborted(signal);
+      worker ??= import("tesseract.js").then(({ createWorker }) => createWorker(rules.ocr.language, undefined, assets));
+      const active = await worker;
+      aborted(signal);
+      const result = await withCancellation(active.recognize(canvas, {}, { text: true, blocks: true }), signal);
+      aborted(signal);
+      return result;
+    },
+    async close() { signal?.removeEventListener("abort", cancel); await close(); },
+  };
+}
+
+function ocrFragments(result: OCRResult, width: number, height: number) {
+  const words = (result.data.blocks ?? []).flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words)));
+  const fragments: DocumentFragment[] = words.filter((word) => word.text.trim()).map((word) => ({
+    text: word.text, x: word.bbox.x0, y: word.bbox.y0,
+    width: word.bbox.x1 - word.bbox.x0, height: word.bbox.y1 - word.bbox.y0, confidence: word.confidence,
+    box: normalizedBox([[word.bbox.x0, word.bbox.y0], [word.bbox.x1, word.bbox.y1]], width, height),
+  }));
+  const confidence = words.length ? words.reduce((sum, word) => sum + word.confidence, 0) / words.length : result.data.confidence;
+  return { fragments, confidence: Number.isFinite(confidence) ? confidence : 0 };
+}
+
+function canvasFor(width: number, height: number) {
   const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
+  canvas.width = Math.ceil(width); canvas.height = Math.ceil(height);
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("This browser cannot prepare the image for local OCR.");
-  context.drawImage(image, 0, 0);
-  image.close();
-  const worker = await (await import("tesseract.js")).createWorker("eng");
+  if (!context) throw new Error("This browser cannot prepare the document for local OCR.");
+  return { canvas, context };
+}
+
+async function readImage(file: File, options: DocumentImportOptions): Promise<DocumentImportResult> {
+  aborted(options.signal);
+  options.onProgress?.({ page: 1, pageCount: 1, phase: "ocr" });
+  let bitmap: ImageBitmap;
+  try { bitmap = await createImageBitmap(file); }
+  catch { throw new Error("The image could not be decoded. Try a PNG or JPEG export of the original page."); }
+  const session = createOCRSession(options.signal, options.ocrAssets);
+  let canvas: HTMLCanvasElement | undefined;
   try {
-    const recognized = await worker.recognize(canvas, {}, { text: true, blocks: true });
-    const words = (recognized.data.blocks ?? []).flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words)));
-    const fragments: Fragment[] = words.map((word) => ({
-      text: word.text,
-      x: word.bbox.x0,
-      y: word.bbox.y0,
-      width: word.bbox.x1 - word.bbox.x0,
-      height: word.bbox.y1 - word.bbox.y0,
-      confidence: word.confidence,
-      box: { x: word.bbox.x0 / canvas.width, y: word.bbox.y0 / canvas.height,
-        width: (word.bbox.x1 - word.bbox.x0) / canvas.width, height: (word.bbox.y1 - word.bbox.y0) / canvas.height },
-    }));
-    const joined = joinFragments(fragments, pageNumber, 0, canvas.width * 0.012);
-    const confidence = words.length ? words.reduce((sum, word) => sum + word.confidence, 0) / words.length : recognized.data.confidence;
-    return { text: joined.text, pages: [{ page: pageNumber, confidence, isOCR: true }], spans: joined.spans };
+    aborted(options.signal);
+    if (bitmap.width * bitmap.height > rules.maxImagePixels) throw new Error("Image dimensions are too large. Resize to under 40 megapixels or upload a PDF.");
+    const prepared = canvasFor(bitmap.width, bitmap.height);
+    canvas = prepared.canvas;
+    prepared.context.drawImage(bitmap, 0, 0);
+    const recognized = ocrFragments(await session.recognize(canvas), canvas.width, canvas.height);
+    const joined = joinDocumentFragments(recognized.fragments, 1, 0, canvas.width);
+    return { ...joined, pages: [{ page: 1, confidence: recognized.confidence, isOCR: true }] };
   } finally {
-    await worker.terminate();
+    bitmap.close();
+    if (canvas) { canvas.width = 0; canvas.height = 0; }
+    await session.close();
   }
+}
+
+/** Image coverage is independent of selectable header/footer text. */
+export function needsPageOCR(textCharacters: number, rasterFraction: number) {
+  return textCharacters < rules.ocr.minimumTextCharacters || rasterFraction >= rules.ocr.minimumRasterPageFraction;
 }
 
 async function readPdf(file: File, options: DocumentImportOptions): Promise<DocumentImportResult> {
   const pdfjs = await import("pdfjs-dist/build/pdf.mjs");
   const pdfWorker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker.default;
+  aborted(options.signal);
   const loadingTask = pdfjs.getDocument({ data: await file.arrayBuffer() });
-  const pdf = await loadingTask.promise;
-  if (pdf.numPages > MAX_PAGES) { await loadingTask.destroy(); throw new Error("PDF has more than the 30-page limit."); }
-  let ocrWorker: Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>> | null = null;
+  const session = createOCRSession(options.signal, options.ocrAssets);
+  let closing: Promise<void> | undefined;
+  const closePDF = () => closing ??= loadingTask.destroy();
+  const cancel = () => { void closePDF().catch(() => {}); };
+  options.signal?.addEventListener("abort", cancel, { once: true });
   let text = "";
   const pages: ImportedSourcePage[] = [];
   const spans: SourceTextSpan[] = [];
   try {
+    aborted(options.signal);
+    const pdf = await loadingTask.promise;
+    if (pdf.numPages > rules.maxPages) throw new Error("PDF has more than the 30-page limit.");
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      aborted(options.signal);
       options.onProgress?.({ page: pageNumber, pageCount: pdf.numPages, phase: "reading" });
       const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const viewport = page.getViewport({ scale: 1 });
-      const items = content.items.filter((item): item is typeof item & { str: string; transform: number[]; width: number; height: number } => "str" in item && Boolean(item.str.trim()));
-      const fragments: Fragment[] = items.map((item) => {
-        const x = item.transform[4];
-        const y = viewport.height - item.transform[5];
-        const height = Math.abs(item.height || item.transform[3] || 10);
-        return { text: item.str, x, y, width: item.width, height, confidence: 100,
-          box: { x: x / viewport.width, y: y / viewport.height, width: item.width / viewport.width, height: height / viewport.height } };
-      });
-      if (fragments.reduce((sum, item) => sum + item.text.length, 0) < 20) {
-        options.onProgress?.({ page: pageNumber, pageCount: pdf.numPages, phase: "ocr" });
-        const renderScale = 1.75;
-        const renderViewport = page.getViewport({ scale: renderScale });
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.ceil(renderViewport.width);
-        canvas.height = Math.ceil(renderViewport.height);
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error(`Page ${pageNumber} could not be rendered for local OCR.`);
-        await page.render({ canvas, canvasContext: context, viewport: renderViewport }).promise;
-        ocrWorker ??= await (await import("tesseract.js")).createWorker("eng");
-        const recognized = await ocrWorker.recognize(canvas, {}, { text: true, blocks: true });
-        const words = (recognized.data.blocks ?? []).flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words)));
-        const ocrFragments: Fragment[] = words.map((word) => ({ text: word.text, x: word.bbox.x0, y: word.bbox.y0,
-          width: word.bbox.x1 - word.bbox.x0, height: word.bbox.y1 - word.bbox.y0, confidence: word.confidence,
-          box: { x: word.bbox.x0 / canvas.width, y: word.bbox.y0 / canvas.height,
-            width: (word.bbox.x1 - word.bbox.x0) / canvas.width, height: (word.bbox.y1 - word.bbox.y0) / canvas.height } }));
-        const joined = joinFragments(ocrFragments, pageNumber, text.length + (text ? 2 : 0), canvas.width * 0.012);
+      let canvas: HTMLCanvasElement | undefined;
+      try {
+        const content = await page.getTextContent();
+        const viewport = page.getViewport({ scale: 1 });
+        const items = content.items.filter((item): item is typeof item & { str: string; transform: number[]; width: number; height: number; fontName: string } => "str" in item && Boolean(item.str.trim()));
+        const fragments: DocumentFragment[] = items.map((item) => {
+          const tx = pdfjs.Util.transform(viewport.transform, item.transform);
+          const fontHeight = Math.hypot(tx[2], tx[3]) || item.height || 10;
+          const advanceLength = Math.hypot(tx[0], tx[1]) || 1;
+          const advance = [tx[0] / advanceLength * item.width, tx[1] / advanceLength * item.width];
+          const ascent = content.styles[item.fontName]?.ascent ?? 0.8;
+          const baseline = [tx[4], tx[5]];
+          const vertical = [tx[2] / fontHeight, tx[3] / fontHeight];
+          const corners: Array<[number, number]> = [0, 1].flatMap((edge) => [ascent, ascent - 1].map((height): [number, number] => [
+            baseline[0] + edge * advance[0] + vertical[0] * height * fontHeight,
+            baseline[1] + edge * advance[1] + vertical[1] * height * fontHeight,
+          ]));
+          const box = normalizedBox(corners, viewport.width, viewport.height);
+          return { text: item.str, x: box.x * viewport.width, y: box.y * viewport.height,
+            width: box.width * viewport.width, height: box.height * viewport.height, confidence: 100, box };
+        });
+        // A scanned body may coexist with a perfectly selectable page number/title.
+        const operators = await page.getOperatorList();
+        let transform = [1, 0, 0, 1, 0, 0];
+        const stack: number[][] = [];
+        let rasterFraction = 0;
+        const imageOps = new Set([pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject, pdfjs.OPS.paintImageMaskXObject]);
+        for (let index = 0; index < operators.fnArray.length; index++) {
+          const op = operators.fnArray[index];
+          if (op === pdfjs.OPS.save) stack.push([...transform]);
+          else if (op === pdfjs.OPS.restore) transform = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+          else if (op === pdfjs.OPS.transform) transform = pdfjs.Util.transform(transform, operators.argsArray[index]);
+          else if (imageOps.has(op)) rasterFraction += Math.abs(transform[0] * transform[3] - transform[1] * transform[2]) / (viewport.width * viewport.height);
+        }
+        let selected = fragments;
+        let confidence = 100;
+        const isOCR = needsPageOCR(fragments.reduce((sum, item) => sum + item.text.length, 0), rasterFraction);
+        if (isOCR) {
+          options.onProgress?.({ page: pageNumber, pageCount: pdf.numPages, phase: "ocr" });
+          const scale = Math.min(rules.ocr.renderScale, Math.sqrt(rules.ocr.maxRenderPixels / (viewport.width * viewport.height)));
+          const renderViewport = page.getViewport({ scale });
+          const prepared = canvasFor(renderViewport.width, renderViewport.height);
+          canvas = prepared.canvas;
+          const rendering = page.render({ canvas, canvasContext: prepared.context, viewport: renderViewport });
+          const cancelRender = () => rendering.cancel();
+          options.signal?.addEventListener("abort", cancelRender, { once: true });
+          try { aborted(options.signal); await rendering.promise; }
+          finally { options.signal?.removeEventListener("abort", cancelRender); }
+          const recognized = ocrFragments(await session.recognize(canvas), canvas.width, canvas.height);
+          confidence = recognized.confidence;
+          const renderWidth = canvas.width, renderHeight = canvas.height;
+          const native = fragments.map((fragment) => ({ ...fragment, x: fragment.box.x * renderWidth, y: fragment.box.y * renderHeight,
+            width: fragment.box.width * renderWidth, height: fragment.box.height * renderHeight }));
+          selected = [...recognized.fragments.filter((fragment) => !native.some((existing) => {
+            const centerX = fragment.x + fragment.width / 2, centerY = fragment.y + fragment.height / 2;
+            return centerX >= existing.x && centerX <= existing.x + existing.width
+              && centerY >= existing.y && centerY <= existing.y + existing.height;
+          })), ...native];
+        }
+        const joined = joinDocumentFragments(selected, pageNumber, text.length + (text ? 2 : 0), canvas?.width ?? viewport.width);
         text += (text ? "\n\n" : "") + joined.text;
         spans.push(...joined.spans);
-        pages.push({ page: pageNumber, confidence: words.length ? words.reduce((sum, word) => sum + word.confidence, 0) / words.length : recognized.data.confidence, isOCR: true });
-      } else {
-        const joined = joinFragments(fragments, pageNumber, text.length + (text ? 2 : 0), 24);
-        text += (text ? "\n\n" : "") + joined.text;
-        spans.push(...joined.spans);
-        pages.push({ page: pageNumber, confidence: 100, isOCR: false });
+        pages.push({ page: pageNumber, confidence, isOCR });
+      } finally {
+        if (canvas) { canvas.width = 0; canvas.height = 0; }
+        page.cleanup();
       }
-      page.cleanup();
     }
+  } catch (error) {
+    aborted(options.signal);
+    if (error instanceof Error && error.name === "PasswordException") throw new Error("This PDF is password protected. Upload an unlocked copy.");
+    if (error instanceof Error && error.name === "InvalidPDFException") throw new Error("This PDF is damaged or invalid. Export a fresh PDF and try again.");
+    throw error;
   } finally {
-    await ocrWorker?.terminate();
-    await loadingTask.destroy();
+    options.signal?.removeEventListener("abort", cancel);
+    await Promise.allSettled([session.close(), closePDF()]);
   }
   return { text, pages, spans };
 }
 
 export async function importDocument(file: File, options: DocumentImportOptions = {}): Promise<DocumentImportResult> {
+  aborted(options.signal);
   const kind = validateFile(file);
-  const result = kind === "pdf" ? await readPdf(file, options) : await readImage(file, 1, options.onProgress);
+  const result = kind === "pdf" ? await readPdf(file, options) : await readImage(file, options);
+  aborted(options.signal);
   if (!result.text.trim()) throw new Error("No readable text was found. Try a clearer scan or paste the document text.");
   return result;
 }
 
-export const documentImportLimits = { maxBytes: MAX_BYTES, maxPages: MAX_PAGES, lowConfidence: LOW_CONFIDENCE } as const;
+export const documentImportLimits = { maxBytes: rules.maxBytes, maxPages: rules.maxPages, lowConfidence: rules.lowConfidence } as const;
 

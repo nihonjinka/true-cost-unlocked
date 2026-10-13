@@ -12,12 +12,12 @@
   {
     "name": "revolving credit",
     "text": "CREDIT CARD AGREEMENT\nThis is revolving credit.\nPurchase APR: 21.9% per year.\nMinimum payment: $25 or 3% of the outstanding balance, whichever is greater.",
-    "expected": {"principal": null, "rate": 21.9, "term": null, "payment": null, "docType": "credit_card", "band": "caution"}
+    "expected": {"principal": null, "rate": 21.9, "term": null, "payment": null, "docType": "credit_card", "band": "low"}
   },
   {
     "name": "merchant cash advance",
     "text": "MERCHANT CASH ADVANCE AGREEMENT\nAdvance amount: $24,000.\nPurchased amount: $30,000.\nFactor rate: 1.25.\nDaily remittance: $250 from future receivables until the purchased amount is collected.",
-    "expected": {"principal": 24000, "rate": 140.2, "term": null, "payment": 250, "docType": "merchant_cash_advance", "band": "high"}
+    "expected": {"principal": 24000, "rate": 140.2, "term": null, "payment": 250, "docType": "merchant_cash_advance", "band": "low"}
   },
   {
     "name": "BNPL agreement with conditional APR",

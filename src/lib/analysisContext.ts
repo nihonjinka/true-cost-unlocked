@@ -18,6 +18,12 @@ export interface InstallmentSchedule {
   totalWithKnownFees: number | null;
   source: string;
   firstPaymentTiming: "one period after agreement";
+  segments?: Array<{ count: number; amount: number; interval: number; intervalUnit: InstallmentSchedule["intervalUnit"]; total: number; kind: "regular" | "balloon" | "single"; source: string }>;
+  statedTotal?: number | null;
+  totalMatchesStated?: boolean | null;
+  daysToMaturity?: number | null;
+  impliedAPR?: number | null;
+  renewalScenarios?: Array<{ renewals: number; totalPaid: number; effectiveAPR: number | null; assumption?: string }>;
 }
 
 export interface CashPriceAnalysis {
@@ -192,10 +198,10 @@ export interface AnalysisContext {
   readonly currencyCode: SupportedCurrency;
   readonly principalField: ExtractedField<number>;
   readonly rateField: ExtractedField<number> & {
-    type: "fixed" | "variable" | "introductory" | "unspecified";
+    type: "fixed" | "variable" | "adjustable" | "introductory" | "unspecified";
     basis: "flat" | "reducing" | "unspecified";
     rateType: "reducing" | "flat" | "deferred" | "revolving" | "unknown";
-    rateRole: "base" | "promotional" | "penalty" | "implied" | "unknown";
+    rateRole: "base" | "purchase" | "cash_advance" | "balance_transfer" | "promotional" | "penalty" | "cap" | "implied" | "unknown";
     basisAssumption: string | null;
   };
   readonly termField: ExtractedField<number>;
@@ -204,11 +210,15 @@ export interface AnalysisContext {
   readonly documentStructure?: ReturnType<typeof import("./documentStructure").inspectLegalStructure>;
   readonly statedEMI: ExtractedField<number>;
   readonly installmentSchedule: InstallmentSchedule | null;
+  readonly paymentScheduleRows?: import("./financial").AmortizationRow[];
   readonly principal: number | null;
   readonly findings: AnalysisFinding[];
   readonly protections: AnalysisFinding[];
   readonly conditionalTerms?: AnalysisFinding[];
-  readonly rateScenarios?: Array<{ type: "variable" | "introductory" | "penalty"; annualRate: number; source: string; conditions: string[]; provenance: FactProvenance }>;
+  readonly rateScenarios?: Array<{ type: "variable" | "adjustable" | "introductory" | "penalty" | "purchase" | "cash_advance" | "balance_transfer"; annualRate: number; source: string; conditions: string[]; provenance: FactProvenance; payment?: number | null }>;
+  readonly minimumPaymentRule?: { percentOfBalance: number | null; floor: number | null; source: string | null };
+  readonly statedTotalPayments?: number | null;
+  readonly statedFinanceCharge?: number | null;
   readonly fees: CostFinding[];
   readonly addOns: CostFinding[];
   readonly taxes: CostFinding[];
@@ -238,6 +248,8 @@ export interface AnalysisContext {
   readonly aiNegotiationStrategies?: string[];
   readonly aiClausesToReview?: string[];
   readonly aiCounterOfferEmail?: string;
+  readonly aiEmailStatus?: "ready" | "partial" | "unavailable" | "not-needed";
+  readonly aiEmailError?: string;
   readonly emi: number | null;
   readonly totalPayment: number | null;
   readonly totalInterest: number | null;

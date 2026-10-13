@@ -1,0 +1,10 @@
+{
+  "confidentWrongThreshold": 0.8,
+  "tolerances": {
+    "principal": { "absolute": 0.01, "relative": 0 },
+    "rate": { "absolute": 0.01, "relative": 0 },
+    "term": { "absolute": 0.01, "relative": 0 },
+    "payment": { "absolute": 0.01, "relative": 0 }
+  },
+  "uploadSimilarity": { "pdf": 0.98, "image": 0.95 }
+}

@@ -19,6 +19,7 @@ export default function Analyze() {
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
   const [evidenceSelection, setEvidenceSelection] = useState<[number, number] | null>(null);
   const [aiEnhancementStatus, setAIEnhancementStatus] = useState<AIEnhancementStatus>("unconfigured");
+  const [aiEnhancementError, setAIEnhancementError] = useState<string | null>(null);
   const aiRequestVersion = useRef(0);
   const analysisRequestVersion = useRef(0);
   const scrollToResultsRef = useRef(false);
@@ -34,9 +35,10 @@ export default function Analyze() {
 
   useEffect(() => {
     if (!result || !scrollToResultsRef.current) return;
-    scrollToResultsRef.current = false;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById("analysis-results")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToResultsRef.current = false;
+      const target = document.getElementById("analysis-results");
+      if (typeof target?.scrollIntoView === "function") target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [result]);
@@ -54,6 +56,7 @@ export default function Analyze() {
     setFallbackMessage(null);
     setIsLoading(false);
     setAIEnhancementStatus("unconfigured");
+    setAIEnhancementError(null);
   };
 
   const requestAIEnhancement = (analysis: AnalysisContext) => {
@@ -61,10 +64,12 @@ export default function Analyze() {
     insightRequest.current?.abort();
     if (!isAIEnhancementConfigured()) {
       setAIEnhancementStatus("unconfigured");
+      setAIEnhancementError(null);
       return;
     }
 
     setAIEnhancementStatus("loading");
+    setAIEnhancementError(null);
     const controller = new AbortController();
     insightRequest.current = controller;
     void enhanceAnalysisWithAI(analysis, { signal: controller.signal })
@@ -75,9 +80,10 @@ export default function Analyze() {
           : current);
         setAIEnhancementStatus("ready");
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (aiRequestVersion.current !== requestVersion) return;
         setAIEnhancementStatus("error");
+        setAIEnhancementError(error instanceof Error ? error.message : "OpenRouter returned an unexpected error.");
       });
   };
 
@@ -119,7 +125,8 @@ export default function Analyze() {
       const fallbackFields = (rules as unknown as { aiExtraction?: { fallbackFieldsByDocumentType?: Record<string, Array<keyof AIExtractedFields>> } }).aiExtraction?.fallbackFieldsByDocumentType?.[local.docType.type] ?? [];
       const fieldMissing: Record<keyof AIExtractedFields, boolean> = {
         principal: amount == null && (local.principalField.value === null || local.principalField.needsReview),
-        annualAPR: rate == null && (local.rateField.value === null || local.rateField.needsReview || local.rateField.rateRole !== "base"),
+        annualAPR: rate == null && (local.rateField.value === null || local.rateField.needsReview ||
+          (local.rateField.rateRole !== "base" && !(local.docType.type === "credit_card" && local.rateField.rateRole === "purchase"))),
         termMonths: duration == null && (local.termField.value === null || local.termField.needsReview),
         payment: local.statedEMI.value === null && !local.installmentSchedule,
       };
@@ -133,9 +140,10 @@ export default function Analyze() {
           analysis = withSourceLocations(local, importedSource);
           setResult(analysis);
           setFallbackMessage("AI extraction checked the unresolved fields. Only values supported by document evidence and numeric checks were applied.");
-        } catch {
+        } catch (error) {
           if (requestVersion !== analysisRequestVersion.current) return;
-          setFallbackMessage("AI field extraction is unavailable. Local analysis is available; review the unresolved fields or enter overrides.");
+          const reason = error instanceof Error ? ` ${error.message}` : "";
+          setFallbackMessage(`AI field extraction is unavailable.${reason} Local analysis is available; review the unresolved fields or enter overrides.`);
         }
       }
       if (requestVersion !== analysisRequestVersion.current) return;
@@ -146,8 +154,7 @@ export default function Analyze() {
       scrollToResultsRef.current = false;
       setAnalysisError(error instanceof Error ? error.message : "The document could not be analyzed.");
     } finally {
-      if (requestVersion !== analysisRequestVersion.current) return;
-      setIsLoading(false);
+      if (requestVersion === analysisRequestVersion.current) setIsLoading(false);
     }
   };
 
@@ -194,7 +201,7 @@ export default function Analyze() {
             <AlertCircle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" /><p className="font-mono text-xs text-destructive">{analysisError}</p>
           </motion.div>}
           {result && (
-            <AnalysisPanels key={result.id} context={result} onPrincipalSelect={selectPrincipal} onEvidenceSelect={setEvidenceSelection} aiEnhancementStatus={aiEnhancementStatus} />
+            <AnalysisPanels key={result.id} context={result} onPrincipalSelect={selectPrincipal} onEvidenceSelect={setEvidenceSelection} aiEnhancementStatus={aiEnhancementStatus} aiEnhancementError={aiEnhancementError} onRetryAI={() => requestAIEnhancement(result)} />
           )}
         </div>
       </div>
