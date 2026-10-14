@@ -119,6 +119,7 @@ export default function Analyze() {
     setAnalysisError(null);
     setResult(null);
     try {
+      if (text.length > rules.maxInputCharacters) throw new Error(`Analysis is limited to ${rules.maxInputCharacters.toLocaleString()} characters.`);
       let local = analyzeLocally(text, amount, rate, duration, currency);
       let analysis = withSourceLocations(local, importedSource);
       setResult(analysis);

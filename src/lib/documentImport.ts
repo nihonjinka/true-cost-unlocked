@@ -36,17 +36,79 @@ function withCancellation<T>(operation: Promise<T>, signal?: AbortSignal): Promi
   });
 }
 
+async function imageDimensions(file: File): Promise<{ width: number; height: number } | null> {
+  const sample = file.slice(0, 256 * 1024);
+  const buffer = typeof sample.arrayBuffer === "function"
+    ? await sample.arrayBuffer()
+    : await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error ?? new Error("The image could not be inspected."));
+      reader.readAsArrayBuffer(sample);
+    });
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 24
+    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    return {
+      width: new DataView(bytes.buffer).getUint32(16),
+      height: new DataView(bytes.buffer).getUint32(20),
+    };
+  }
+  if (bytes.length >= 26 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    const view = new DataView(bytes.buffer);
+    const headerSize = view.getUint32(14, true);
+    if (headerSize === 12) return { width: view.getUint16(18, true), height: view.getUint16(20, true) };
+    if (headerSize >= 40) return { width: Math.abs(view.getInt32(18, true)), height: Math.abs(view.getInt32(22, true)) };
+    return null;
+  }
+  if (bytes.length >= 30 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+    && bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58) {
+    return {
+      width: 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16),
+      height: 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16),
+    };
+  }
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      while (offset < bytes.length && bytes[offset] !== 0xff) offset += 1;
+      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+      const marker = bytes[offset++];
+      if (marker === 0xd8 || marker === 0xd9) continue;
+      if (offset + 1 >= bytes.length) break;
+      const length = (bytes[offset] << 8) + bytes[offset + 1];
+      if (length < 2 || offset + length > bytes.length) break;
+      const isFrame = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
+      if (isFrame && length >= 7) return { height: (bytes[offset + 3] << 8) + bytes[offset + 4], width: (bytes[offset + 5] << 8) + bytes[offset + 6] };
+      offset += length;
+    }
+  }
+  return null;
+}
+
 function createOCRSession(signal?: AbortSignal, assets?: DocumentImportOptions["ocrAssets"]) {
   let worker: Promise<OCRWorker> | undefined;
   let closing: Promise<void> | undefined;
-  const close = () => closing ??= (async () => { if (worker) await (await worker).terminate(); })();
+  let termination: Promise<void> | undefined;
+  const terminate = () => termination ??= worker!.then(async (active) => { await active.terminate(); });
+  const close = () => {
+    if (!worker) return Promise.resolve();
+    if (signal?.aborted) {
+      void terminate().catch(() => {});
+      return Promise.resolve();
+    }
+    return closing ??= terminate();
+  };
   const cancel = () => { void close().catch(() => {}); };
   signal?.addEventListener("abort", cancel, { once: true });
   return {
     async recognize(canvas: HTMLCanvasElement) {
       aborted(signal);
       worker ??= import("tesseract.js").then(({ createWorker }) => createWorker(rules.ocr.language, undefined, assets));
-      const active = await worker;
+      const active = await withCancellation(worker, signal);
       aborted(signal);
       const result = await withCancellation(active.recognize(canvas, {}, { text: true, blocks: true }), signal);
       aborted(signal);
@@ -78,6 +140,11 @@ function canvasFor(width: number, height: number) {
 async function readImage(file: File, options: DocumentImportOptions): Promise<DocumentImportResult> {
   aborted(options.signal);
   options.onProgress?.({ page: 1, pageCount: 1, phase: "ocr" });
+  const dimensions = await imageDimensions(file);
+  aborted(options.signal);
+  if (dimensions && dimensions.width * dimensions.height > rules.maxImagePixels) {
+    throw new Error("Image dimensions are too large. Resize to under 40 megapixels or upload a PDF.");
+  }
   let bitmap: ImageBitmap;
   try { bitmap = await createImageBitmap(file); }
   catch { throw new Error("The image could not be decoded. Try a PNG or JPEG export of the original page."); }
@@ -216,4 +283,3 @@ export async function importDocument(file: File, options: DocumentImportOptions 
 }
 
 export const documentImportLimits = { maxBytes: rules.maxBytes, maxPages: rules.maxPages, lowConfidence: rules.lowConfidence } as const;
-

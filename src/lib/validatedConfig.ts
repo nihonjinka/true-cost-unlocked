@@ -68,6 +68,9 @@ export const scheduleConfigSchema = z.object({
   nonTermDurationRoles: z.array(periodRule),
   maximumCount: z.number().int().positive(), maximumClauseCharacters: z.number().positive(), maximumFrequencyDistance: z.number().positive(),
   countRoundingTolerance: probability, totalRelativeTolerance: probability,
+  singlePayment: z.object({ conceptPattern: nonempty, maturityPattern: nonempty,
+    daysPerUnit: z.object({ day: z.number().positive(), week: z.number().positive(), fortnight: z.number().positive(), month: z.number().positive(), year: z.number().positive() }),
+    approximateDayUnits: z.array(unit) }),
 }).passthrough();
 
 /** Fail at the exact config path instead of silently disabling a detector. */

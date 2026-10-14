@@ -33,7 +33,7 @@ export interface ParsedMonetaryValue {
   tax?: { percent: number; basis: string };
 }
 const config = rules as {
-  polarity: { negators: string[]; zeroPatterns: string[]; scopeBreaks: string[]; nonNegatingPatterns: string[]; conditionalPatterns: string[]; hypotheticalPatterns: string[]; conditionPattern: string; laterAmountPattern: string };
+  polarity: { negators: string[]; zeroPatterns: string[]; scopeBreaks: string[]; trailingScopeBreakPattern: string; nonNegatingPatterns: string[]; conditionalPatterns: string[]; hypotheticalPatterns: string[]; conditionPattern: string; laterAmountPattern: string };
   scenarioPeriods: { gracePattern: string; daysPerUnit: Record<string, number> };
   protectionCatalog: Array<{ id: string; label: string; pattern: string; explanation: string; acceptedPolarities: string[]; disallowedPatterns?: string[]; feeRuleId?: string }>;
   rateAttributes: { types: Array<{ type: ParsedRateCandidate["type"]; pattern: string; acceptedPolarities?: string[] }>; flatPattern: string; reducingPattern: string; aprPattern: string; flatPricingProducts: string[] };
@@ -153,7 +153,7 @@ export function segmentClauses(text: string): Clause[] {
     if (!content.trim()) return;
     const labelStarts: number[] = [];
     const maximumLabelCharacters = extractionRules.maximumLabelCharacters ?? 120;
-    const labels = new RegExp(String.raw`(?:^|[\r\n \t,;])([A-Za-z][A-Za-z0-9 /()_'’&.-]{1,${maximumLabelCharacters}})(?::|@)(?=\s*(?:${CURRENCY_TOKEN}|[$₹€£¥]?\s*\d))`, "g");
+    const labels = new RegExp(String.raw`(?:^|[\r\n \t,;])([A-Za-z][A-Za-z0-9 /()_'’&-]{1,${maximumLabelCharacters}})(?::|@)(?=\s*(?:${CURRENCY_TOKEN}|[$₹€£¥]?\s*\d))`, "g");
     const lineLabels = new RegExp(String.raw`(?:^|[\r\n])([A-Za-z][A-Za-z0-9 /()_'’&.-]{1,${maximumLabelCharacters}}):(?=\s*\S)`, "g");
     for (const match of [...content.matchAll(labels), ...content.matchAll(lineLabels)]) {
       const labelStart = (match.index ?? 0) + (match[0].length - match[1].length - 1);
@@ -543,8 +543,13 @@ export function classifyPolarity(clause: string, targetStart = 0, targetEnd = cl
   const breaks = Array.from(clause.matchAll(new RegExp(policy.scopeBreaks.join("|"), "gi")));
   const preceding = breaks.filter((match) => match.index! < targetStart);
   const from = preceding[preceding.length - 1];
-  const to = breaks.find((match) => match.index! >= targetEnd);
-  let scoped = clause.slice(from ? from.index! + from[0].length : 0, to?.index ?? clause.length);
+  // Include a target's own trailing qualifier ("fee: none", "fee waived"),
+  // but stop before a coordinated independent assertion. A later modifier
+  // such as "without demand" must not negate an earlier target.
+  const trailing = new RegExp(policy.trailingScopeBreakPattern, "i").exec(clause.slice(targetEnd));
+  const contrast = breaks.find((match) => match.index! >= targetEnd);
+  const scopeEnd = Math.min(contrast?.index ?? clause.length, trailing ? targetEnd + trailing.index! : clause.length);
+  let scoped = clause.slice(from ? from.index! + from[0].length : 0, scopeEnd);
   for (const pattern of policy.nonNegatingPatterns) scoped = scoped.replace(new RegExp(pattern, "gi"), "");
   const negators = Array.from(scoped.matchAll(new RegExp(policy.negators.join("|"), "gi")));
   // Count a coordinated "neither ... nor" or "no ... nor" once.

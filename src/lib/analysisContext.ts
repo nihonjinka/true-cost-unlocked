@@ -22,6 +22,7 @@ export interface InstallmentSchedule {
   statedTotal?: number | null;
   totalMatchesStated?: boolean | null;
   daysToMaturity?: number | null;
+  maturityAssumption?: string | null;
   impliedAPR?: number | null;
   renewalScenarios?: Array<{ renewals: number; totalPaid: number; effectiveAPR: number | null; assumption?: string }>;
 }

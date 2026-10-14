@@ -41,7 +41,15 @@ describe("audit integration regressions", () => {
 
   it.each(["Net proceeds: $9700.", "Amount disbursed to Borrower: $9700.", "Funds released to the borrower: $9700."])("reconciles disclosed proceeds with itemized fees: %s", (proceeds) => {
     const result = analyzeLocally(`PERSONAL LOAN. Principal: $10000. APR: 10%. Term: 24 months. Origination fee: $300. ${proceeds}`);
+    expect(result.principal).toBe(10000);
     expect(result.netDisbursed).toBe(9700);
+    expect(result.effectiveAPR).toBeGreaterThan(10);
+  });
+
+  it("uses economic proceeds consistently when an upfront fee is paid separately", () => {
+    const result = analyzeLocally("PERSONAL LOAN. Principal: $10000. APR: 10%. Term: 12 months. Origination fee: $300 paid separately.");
+    expect(result.netDisbursed).toBe(9700);
+    expect(result.totalCost).toBeCloseTo((result.totalPayment ?? 0) - result.netDisbursed, 6);
     expect(result.effectiveAPR).toBeGreaterThan(10);
   });
 

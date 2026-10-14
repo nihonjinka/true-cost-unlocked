@@ -1,4 +1,4 @@
-import config from "@/data/scheduleRules.json";
+import { scheduleRules as config } from "./validatedConfig";
 
 /** Shared count/frequency grammar. No analyzer imports: financial helpers can use it safely. */
 export const NUMBER_PATTERN = `(?:\\d+(?:\\.\\d+)?|(?:${Object.keys(config.numberWords).concat(Object.keys(config.numberScales)).join("|")})(?:[- ]+(?:and[- ]+)?(?:${Object.keys(config.numberWords).concat(Object.keys(config.numberScales)).join("|")}))*)`;
@@ -22,6 +22,20 @@ export function parseWrittenNumber(raw: string): number | null {
 
 export function unitSpec(raw: string) {
   return config.units.find((entry) => new RegExp(`^(?:${entry.pattern})$`, "i").test(raw.trim())) ?? null;
+}
+
+/** Read maturity from the payment clause, including written quantities. */
+export function paymentMaturityIn(clause: string) {
+  const policy = config.singlePayment;
+  const pattern = policy.maturityPattern.split("{{NUMBER}}").join(NUMBER_PATTERN).split("{{UNIT}}").join(UNIT_PATTERN);
+  const match = new RegExp(pattern, "i").exec(clause);
+  const interval = match?.groups?.count ? parseWrittenNumber(match.groups.count) : null;
+  const unit = match?.groups?.unit ? unitSpec(match.groups.unit) : null;
+  if (interval === null || interval <= 0 || !unit) return null;
+  const daysPerUnit = policy.daysPerUnit[unit.unit as keyof typeof policy.daysPerUnit];
+  return { interval, unit: unit.unit as ScheduleFrequency["unit"], days: interval * daysPerUnit,
+    months: interval * unit.months,
+    assumption: policy.approximateDayUnits.includes(unit.unit) ? `APR day-count assumption: ${daysPerUnit} days per ${unit.unit}.` : null };
 }
 
 export interface ScheduleFrequency {

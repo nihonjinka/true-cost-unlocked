@@ -44,10 +44,10 @@ Open: http://localhost:5175
 The AI-enhanced analysis uses OpenRouter. Set this environment variable before running the app:
 
 ```bash
-VITE_OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 ```
 
-For local development, put it in a `.env.local` file at the repo root. On Netlify, add the same key in Site settings > Environment variables, then redeploy.
+The key is consumed by the server-side proxy and must not be exposed in browser code. For local development, set `OPENROUTER_API_KEY` in `.env.local`; on Netlify, add it in Site settings > Environment variables, then redeploy. The proxy also applies a bounded per-client request limit; set `OPENROUTER_RATE_LIMIT_MAX_REQUESTS` to change the per-minute limit for a deployment.
 
 ## Analysis rules
 
@@ -62,6 +62,15 @@ Detection is configured in `src/data/analysisRules.json`:
 
 The canonical findings list drives diagnosis, glossary, risk, and page panels. Optional OpenRouter insights receive structured facts with provenance and verified evidence; validation strips unsupported claims. AI output never changes financial calculations or risk scores.
 
+## Limits and interpretation
+
+- PDF imports are limited to 20 MB and 30 pages. Image imports are limited to 40 megapixels, and OCR runs locally in the browser.
+- Pasted or extracted analysis text is limited to 250,000 characters to keep deterministic analysis bounded in the browser.
+- Imported text is evidence for decision support, not legal or financial advice. Unresolved or ambiguous fields are surfaced instead of silently guessed.
+- `netDisbursed` represents economic proceeds after documented upfront costs, including fees paid separately. APR and total-cost calculations use the same proceeds basis.
+- AI assistance is optional and sends extracted text or verified analysis context to the configured provider through the server proxy. Provider availability, rate limits, and deployment quotas can affect generated insights.
+- The development upload evaluation includes no held-out owner documents at present; its held-out section is therefore reported as not evaluated rather than as a measured accuracy result.
+
 ## Scripts
 
 ```bash
@@ -69,6 +78,9 @@ npm run dev
 npm run build
 npm run lint
 npm run test
+npm run typecheck
+npm run evaluate
+npm run evaluate:uploads
 ```
 
 ## Project Stack

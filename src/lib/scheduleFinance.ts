@@ -180,7 +180,7 @@ export function statedNetProceeds(text: string): { amount: number; source: strin
 }
 
 export function feeCashflows(findings: readonly CostFinding[]) {
-  const totals = { deducted: 0, financed: 0, paidSeparately: 0, unknown: 0 };
+  const totals = { deducted: 0, financed: 0, paidSeparately: 0, explicitPaidSeparately: 0, unknown: 0 };
   const seen = new Set<string>();
   for (const finding of findings) {
     if (finding.negated || !config.cashflows.eligibleCategories.includes(finding.category)) continue;
@@ -191,6 +191,9 @@ export function feeCashflows(findings: readonly CostFinding[]) {
     seen.add(key);
     const treatment = feeCashflowTreatment(finding);
     totals[treatment === "paid_separately" ? "paidSeparately" : treatment] += amount;
+    if (treatment === "paid_separately" && new RegExp(config.cashflows.paidSeparatelyPattern, "i").test(finding.source)) {
+      totals.explicitPaidSeparately += amount;
+    }
   }
   return totals;
 }

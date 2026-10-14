@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleOpenRouter } from "../../server/openrouter";
 
-const request = (body: unknown = { messages: [{ role: "user", content: "Review the documented clauses." }] }, origin = "https://truecost.example") =>
-  new Request("https://truecost.example/.netlify/functions/openrouter", { method: "POST", headers: { origin }, body: JSON.stringify(body) });
+const request = (
+  body: unknown = { messages: [{ role: "user", content: "Review the documented clauses." }] },
+  origin = "https://truecost.example",
+  client = "198.51.100.10",
+) => new Request("https://truecost.example/.netlify/functions/openrouter", {
+  method: "POST", headers: { origin, "x-nf-client-connection-ip": client }, body: JSON.stringify(body),
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("server AI proxy", () => {
@@ -23,6 +28,15 @@ describe("server AI proxy", () => {
     expect((await handleOpenRouter(request({}, "https://different.example"), { OPENROUTER_API_KEY: "test" })).status).toBe(403);
     expect((await handleOpenRouter(request({ messages: [{ role: "tool", content: "bad" }] }), { OPENROUTER_API_KEY: "test" })).status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("limits repeated requests from one client", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const env = { OPENROUTER_API_KEY: "test", OPENROUTER_RATE_LIMIT_MAX_REQUESTS: "1" };
+    expect((await handleOpenRouter(request(undefined, undefined, "198.51.100.25"), env)).status).toBe(200);
+    expect((await handleOpenRouter(request(undefined, undefined, "198.51.100.25"), env)).status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("reports configuration failure and hides provider diagnostic bodies", async () => {

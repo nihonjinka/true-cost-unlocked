@@ -57,6 +57,12 @@
     "eligibleCategories": ["upfront_fee", "financed_addon"],
     "defaultUpfrontTreatment": "paid_separately"
   },
+  "singlePayment": {
+    "conceptPattern": "\\b(?:single|one(?:[- ]time)?|lump[- ]sum|bullet)\\s+(?:final\\s+)?(?:payment|repayment)\\b",
+    "maturityPattern": "\\b(?:due|payable|repayable)\\s+(?:in|after|within)\\s+(?<count>{{NUMBER}})\\s+(?<unit>{{UNIT}})\\b",
+    "daysPerUnit": { "day": 1, "week": 7, "fortnight": 14, "month": 30, "year": 365 },
+    "approximateDayUnits": ["month", "year"]
+  },
   "adjustableRates": {
     "resetAfterMonthsPattern": "\\b(?:after|at)\\s+(?<months>\\d+)\\s+months?\\b[^.;]{0,45}\\b(?:adjust|reset|change)\\w*\\b|\\b(?:first|initial)\\s+(?:rate\\s+)?adjustment\\b[^.;]{0,45}\\bafter\\s+(?<monthsAfterReset>\\d+)\\s+months?\\b|\\b(?:rate|interest\\s+rate|apr)\\b[^.;]{0,45}\\b(?:adjust|reset|change)\\w*\\b[^.;]{0,45}\\bafter\\s+(?<monthsAfterRateReset>\\d+)\\s+months?\\b",
     "firstAdjustmentCapPattern": "\\b(?:first|initial)\\s+(?:rate\\s+)?(?:adjustment|increase)\\b[^;\\n]{0,70}?(?<cap>\\d+(?:\\.\\d+)?)\\s*(?<unit>%|percentage\\s+points?|points?)(?<qualifier>[^;\\n.]{0,40})",

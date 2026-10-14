@@ -32,7 +32,10 @@ export function evaluationMatches(field: EvaluationField, actual: number | strin
 }
 
 export function textSimilarity(original: string, extracted: string): number {
-  const normalize = (text: string) => text.normalize("NFKC").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+  const normalize = (text: string) => text.normalize("NFKC")
+    .replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
+    .replace(/[ \t]*([:,$%])[ \t]*/g, "$1")
+    .replace(/\s+/g, " ").trim();
   const left = normalize(original), right = normalize(extracted);
   if (!left.length && !right.length) return 1;
   // Linear memory Levenshtein: inserted/missing content counts against accuracy.

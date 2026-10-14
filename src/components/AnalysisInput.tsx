@@ -74,6 +74,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
     try {
       const imported = await importDocument(file, { signal: controller.signal, onProgress: (next) => { if (version === importVersion.current) setProgress(next); } });
       if (version !== importVersion.current) return;
+      if (imported.text.length > rules.maxInputCharacters) throw new Error(`Extracted text exceeds the ${rules.maxInputCharacters.toLocaleString()} character limit. Import a shorter document or paste selected sections.`);
       setText(imported.text);
       clearOverrides();
       setSource(imported);
@@ -90,7 +91,8 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
   };
 
   // Only require text — fields are optional
-  const canAnalyze = text.trim().length > 0 && !invalidOverrides && !isImporting;
+  const tooLong = text.length > rules.maxInputCharacters;
+  const canAnalyze = text.trim().length > 0 && !tooLong && !invalidOverrides && !isImporting;
   const calculatorType = (rules.calculatorRegistry.documentTypes as Record<string, string>)[extractedValues.docType.type];
   const revolving = !extracting && calculatorType === "revolving";
 
@@ -124,7 +126,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
           {isImporting && <p role="status" className="mt-3 flex items-center gap-2 font-mono text-[10px] text-primary"><LoaderCircle className="h-3 w-3 animate-spin" />{progress?.phase === "ocr" ? "Running on-device OCR" : "Reading document"}{progress ? ` · page ${progress.page} of ${progress.pageCount}` : "…"}</p>}
           {importError && <p role="alert" className="mt-3 flex items-center gap-2 font-mono text-[10px] text-destructive"><AlertCircle className="h-3 w-3" />{importError}</p>}
           {source?.pages.some((page) => page.isOCR && page.confidence < documentImportLimits.lowConfidence) && <div role="status" className="mt-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 font-mono text-[10px] text-amber-600">Low OCR confidence on page(s) {source.pages.filter((page) => page.isOCR && page.confidence < documentImportLimits.lowConfidence).map((page) => `${page.page} (${Math.round(page.confidence)}%)`).join(", ")}. Check and edit the extracted text before analysis.</div>}
-          <p className="mt-3 font-mono text-[9px] text-muted-foreground">Privacy: PDF/image bytes stay in this browser. AI assistance sends extracted text for unresolved fields and relevant excerpts and analysis facts for insights and email drafts.</p>
+          <p className="mt-3 font-mono text-[9px] text-muted-foreground">Privacy: PDF/image bytes stay in this browser.</p>
         </div>
         <div>
           <label htmlFor="agreement-text" className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
@@ -144,6 +146,8 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
             placeholder="Paste loan agreement, credit card terms, BNPL contract... Values will be auto-extracted."
             className="w-full bg-background border border-border px-4 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/40 resize-none transition-colors"
           />
+          <p className="mt-1 text-right font-mono text-[9px] text-muted-foreground">{text.length.toLocaleString()} / {rules.maxInputCharacters.toLocaleString()} characters</p>
+          {tooLong && <p role="alert" className="mt-1 font-mono text-xs text-destructive">Text exceeds the analysis limit. Shorten it to {rules.maxInputCharacters.toLocaleString()} characters; the pasted text has been kept in full.</p>}
         </div>
 
         <div>
@@ -160,7 +164,7 @@ export function AnalysisInput({ onAnalyze, isLoading, evidenceSelection, onInput
             )}
             {extracting && <span role="status" className="font-mono text-[9px] text-muted-foreground ml-auto">Updating extracted fields…</span>}
           </div>
-          {extractionError && <p role="status" className="mb-2 font-mono text-xs text-destructive">{extractionError} You can enter overrides or analyze the document for AI assistance.</p>}
+          {extractionError && !tooLong && <p role="status" className="mb-2 font-mono text-xs text-destructive">{extractionError} You can enter overrides or analyze the document for AI assistance.</p>}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div>
               <label htmlFor="agreement-currency" className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">Currency</label>

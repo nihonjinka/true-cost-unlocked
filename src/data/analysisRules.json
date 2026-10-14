@@ -12,6 +12,7 @@
     "nonNegatingPatterns": ["\\bnot\\s+refundable\\b", "\\bnot\\s+optional\\b", "\\b(?:if|when|unless)\\b[^,;]{0,120}\\b(?:no|not|never|without|cannot|can['’]t|won['’]t|do\\s+not|don['’]t)\\b[^,;]{0,120},", "(?<=\\b(?:rights?|class[- ]action|jury[- ]trial)[^.;]{0,60})\\bwaived\\b", "\\bwaiv(?:e|ed)\\b(?=[^.;]{0,90}\\b(?:jury[- ]trial|class[- ]action|rights?)\\b)"],
     "laterAmountPattern": "\\b(?:then|thereafter|afterwards?|subsequently|beginning|starting|from\\s+(?:month|year)|after\\s+(?:the\\s+)?(?:first\\s+)?\\d+|following\\s+(?:the\\s+)?grace)\\b",
     "conditionalPatterns": ["\\b(?:if|unless|when|upon|after|subject\\s+to|may|might|could)\\b"],
+    "trailingScopeBreakPattern": ";|,(?!\\d)(?=\\s*(?:the|a|an|lender|borrower|you|we|they|all|any|no|not|may|can|will)\\b)|\\band\\b(?=\\s+(?:the|a|an|lender|borrower|you|we|they|all|any|no|not|may|can|will)\\b)",
     "hypotheticalPatterns": ["\\b(?:for\\s+example|suppose|hypothetically|illustration|illustrative)\\b"],
     "conditionPattern": "\\b(?:if|unless|when|provided that|only if|after|upon|following|during|for the first|within)\\s+[^.;]+"
   },
@@ -92,7 +93,7 @@
   ],
   "principalLabels": [
     {"id": "amount_financed", "pattern": "\\bamount\\s+financed\\b", "score": 140, "kind": "principal"},
-    {"id": "net_proceeds", "pattern": "\\b(?:net\\s+proceeds|net\\s+amount\\s+(?:advanced|funded)|funds\\s+advanced|amount\\s+advanced|amount\\s+funded)\\b", "score": 145, "kind": "principal"},
+    {"id": "net_proceeds", "pattern": "\\b(?:net\\s+proceeds|net\\s+amount\\s+(?:advanced|funded)|funds\\s+advanced|amount\\s+advanced|amount\\s+funded)\\b", "score": 100, "kind": "principal"},
     {"id": "purchased_amount", "pattern": "\\b(?:purchased\\s+amount|receivables\\s+purchased)\\b", "score": 90, "kind": "price"},
     {"id": "loan_amount", "pattern": "\\bloan\\s+amount\\b", "score": 130, "kind": "principal"},
     {"id": "defined_loan", "pattern": "\\b(?:loan|credit\\s+facility)\\b", "score": 115, "kind": "principal"},
@@ -332,5 +333,6 @@
   },
   "plausibility": {"terminalPaymentPattern": "\\b(?:single|one(?:[- ]time)?|final|balloon|lump[- ]sum|maturity)\\s+(?:final\\s+)?(?:payment|repayment|installment)\\b", "feePattern": "\\b(?:fees?|charges?|commission|origination|processing|deposit)\\b", "paymentPattern": "\\b(?:emi|installments?|instalments?|(?:monthly\\s+)?payments?|repayments?)\\b", "principalPercentBasisPattern": "(?:of|on)\\s+(?:the\\s+)?(?:original\\s+)?(?:loan|principal|amount\\s+financed)", "confidenceCap": 0.35},
   "inputExtractionDebounceMs": 180,
+  "maxInputCharacters": 250000,
   "analysisConfidenceThreshold": 0.7
 }

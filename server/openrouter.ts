@@ -4,6 +4,12 @@ interface CompletionRequest {
   response_format?: { type: "json_object" };
 }
 
+const requestHistory = new Map<string, number[]>();
+const DEFAULT_RATE_LIMIT = 30;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_TRACKED_CLIENTS = 1000;
+const MAX_REQUESTS_PER_WINDOW = 1000;
+
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
 });
@@ -13,6 +19,27 @@ export async function handleOpenRouter(request: Request, env: Record<string, str
   if (request.method !== "POST") return json({ error: "Use POST to request AI assistance." }, 405);
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(request.url).origin) return json({ error: "Request origin is not allowed." }, 403);
+  const now = Date.now();
+  const client = request.headers.get("x-nf-client-connection-ip")
+    ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? "unknown";
+  if (requestHistory.size >= MAX_TRACKED_CLIENTS) {
+    for (const [key, timestamps] of requestHistory) {
+      const active = timestamps.filter((timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS);
+      if (active.length) requestHistory.set(key, active);
+      else requestHistory.delete(key);
+    }
+  }
+  if (!requestHistory.has(client) && requestHistory.size >= MAX_TRACKED_CLIENTS) {
+    return json({ error: "AI request capacity reached. Please retry shortly." }, 429);
+  }
+  const configuredLimit = Number(env.OPENROUTER_RATE_LIMIT_MAX_REQUESTS);
+  const limit = Number.isFinite(configuredLimit) && configuredLimit > 0
+    ? Math.min(MAX_REQUESTS_PER_WINDOW, Math.max(1, Math.floor(configuredLimit))) : DEFAULT_RATE_LIMIT;
+  const recent = (requestHistory.get(client) ?? []).filter((timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= limit) return json({ error: "AI request limit reached. Please retry shortly." }, 429);
+  recent.push(now);
+  requestHistory.set(client, recent);
   const key = env.OPENROUTER_API_KEY?.trim() || env.VITE_OPENROUTER_API_KEY?.trim();
   if (!key) return json({ error: "AI is not configured on the server. Set OPENROUTER_API_KEY in the deployment environment." }, 503);
   if (Number(request.headers.get("content-length")) > 300_000) return json({ error: "AI request is too large." }, 413);

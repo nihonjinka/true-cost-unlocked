@@ -4,7 +4,8 @@ import { joinDocumentFragments, normalizedBox, type DocumentFragment } from "@/l
 import { evaluationMatches, textSimilarity } from "@/lib/evaluation";
 
 const ocr = vi.hoisted(() => ({ recognize: vi.fn(), terminate: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("tesseract.js", () => ({ createWorker: vi.fn().mockResolvedValue(ocr) }));
+const createWorker = vi.hoisted(() => vi.fn().mockResolvedValue(ocr));
+vi.mock("tesseract.js", () => ({ createWorker }));
 
 function fragment(text: string, x: number, y: number, width = 200): DocumentFragment {
   return { text, x, y, width, height: 12, confidence: 100, box: { x: x / 600, y: y / 800, width: width / 600, height: 12 / 800 } };
@@ -50,6 +51,32 @@ describe("document layout and OCR decisions", () => {
     await expect(importDocument(new File(["tiff"], "scan.tiff"))).rejects.toThrow("Convert TIFF");
     await expect(importDocument(new File([], "empty.pdf"))).rejects.toThrow("empty");
   });
+  it("rejects oversized PNG dimensions before allocating a bitmap", async () => {
+    const bytes = new Uint8Array(24);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    new DataView(bytes.buffer).setUint32(16, 100_000);
+    new DataView(bytes.buffer).setUint32(20, 1_000);
+    const decode = vi.fn();
+    vi.stubGlobal("createImageBitmap", decode);
+    try {
+      await expect(importDocument(new File([bytes], "oversized.png", { type: "image/png" }))).rejects.toThrow("dimensions are too large");
+      expect(decode).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("reads legacy BMP dimensions without falsely rejecting the supported image", async () => {
+    const bytes = new Uint8Array(26);
+    bytes.set([0x42, 0x4d]);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(14, 12, true);
+    view.setUint16(18, 1000, true); view.setUint16(20, 1000, true);
+    view.setUint16(22, 1, true); view.setUint16(24, 24, true);
+    const decode = vi.fn().mockRejectedValue(new Error("Decode probe"));
+    vi.stubGlobal("createImageBitmap", decode);
+    try {
+      await expect(importDocument(new File([bytes], "legacy.bmp", { type: "image/bmp" }))).rejects.toThrow("could not be decoded");
+      expect(decode).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("terminates in-flight OCR even if the worker never settles its recognition promise", async () => {
     ocr.recognize.mockImplementation(() => new Promise(() => {}));
     const close = vi.fn();
@@ -66,6 +93,26 @@ describe("document layout and OCR decisions", () => {
       expect(close).toHaveBeenCalledOnce();
     } finally { context.mockRestore(); vi.unstubAllGlobals(); }
   });
+  it("cancels OCR worker initialization without leaving import cleanup pending", async () => {
+    ocr.terminate.mockClear();
+    let resolveWorker: ((worker: typeof ocr) => void) | undefined;
+    createWorker.mockImplementationOnce(() => new Promise((resolve) => { resolveWorker = resolve; }));
+    const close = vi.fn();
+    vi.stubGlobal("createImageBitmap", vi.fn().mockResolvedValue({ width: 600, height: 800, close }));
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    try {
+      const controller = new AbortController();
+      const importing = importDocument(new File(["pixels"], "scan.png"), { signal: controller.signal });
+      const rejected = expect(importing).rejects.toMatchObject({ name: "AbortError" });
+      await vi.waitFor(() => expect(resolveWorker).toBeTypeOf("function"));
+      controller.abort();
+      await rejected;
+      expect(close).toHaveBeenCalledOnce();
+      expect(ocr.terminate).not.toHaveBeenCalled();
+      resolveWorker?.(ocr);
+      await vi.waitFor(() => expect(ocr.terminate).toHaveBeenCalled());
+    } finally { context.mockRestore(); vi.unstubAllGlobals(); createWorker.mockReset().mockResolvedValue(ocr); }
+  });
 });
 
 describe("evaluation rigor", () => {
@@ -78,6 +125,8 @@ describe("evaluation rigor", () => {
   });
   it("counts omissions and insertions as OCR errors while ignoring whitespace layout", () => {
     expect(textSimilarity("Principal: $1000\nAPR: 5%", "Principal: $1000  APR: 5%")).toBe(1);
+    expect(textSimilarity("Principal: $15,000\nTerm: 36 months", "Principal : $ 15, 000\nTerm : 36 months")).toBe(1);
+    expect(textSimilarity("Principal: $15,000\nTerm: 36 months", "Principal : $ 15, 000\nTerm : 3 6 months")).toBeLessThan(1);
     expect(textSimilarity("Principal: $1000 APR: 5%", "Principal: $1000")).toBeLessThan(0.95);
     expect(textSimilarity("Principal: $1000", "Principal: $1000 extra invented content")).toBeLessThan(0.95);
   });

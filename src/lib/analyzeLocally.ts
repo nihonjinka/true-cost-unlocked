@@ -1,18 +1,16 @@
 import { analyzeLoan, calculateEffectiveAPR, calculateEMI, calculateFlatLoan, calculateShortTermAPR, detectCurrency, formatCurrency, minimumPaymentPayoff, type SupportedCurrency } from "./financial";
-import { calculateRisk, canonicalFinding, classifyDocument, classifyPolarity, collectRuleFindings, computeTaxImpacts, detectClaims, detectClaimsGeneric, detectCosts, detectCostsGeneric, extractAmountCandidates, extractRateCandidates, extractRateType, extractStatedEMI, mergeClauseFindings, parseMonetaryValues, resolveDerivedAmountCandidates, scorePrincipalCandidates, segmentClauses, type ParsedRateCandidate } from "./analysisEngine";
+import { calculateRisk, canonicalFinding, classifyDocument, classifyPolarity, collectRuleFindings, computeTaxImpacts, detectClaimsGeneric, detectCostsGeneric, extractAmountCandidates, extractRateCandidates, extractRateType, extractStatedEMI, mergeClauseFindings, resolveDerivedAmountCandidates, scorePrincipalCandidates, segmentClauses, type ParsedRateCandidate } from "./analysisEngine";
 import { freezeAnalysisContext, type AdviceResult, type AddOnImpact, type AlternativeFunding, type AnalysisContext, type AnalysisFinding, type AIExtractedFields, type AmountRelationship, type CashPriceAnalysis, type CostBreakdown, type CostFinding, type DeceptionResult, type ExtractedField, type FairMarketBenchmark, type GlossaryItem, type InstallmentSchedule, type ReconciliationCheck } from "./analysisContext";
-import { analysisRules as rules } from "./validatedConfig";
+import { analysisRules as rules, extractionRules, scheduleRules } from "./validatedConfig";
 import { normalizeDocument } from "./documentNormalization";
 import { inspectLegalStructure, resolveLegalReference } from "./documentStructure";
 import { classifyPeriodRoles, selectLoanTerm, type PeriodCandidate } from "./periodRoles";
 import { extractNumericCandidates, type NumericCandidate } from "./numericCandidates";
 import { resolveConstrainedAssignment, type ConstraintAssignment } from "./constraintResolver";
-import extractionRules from "@/data/extractionRules.json";
-import { countedSchedules, frequenciesIn } from "./scheduleParsing";
+import { extractInstallmentSchedule } from "./installmentSchedule";
 import { analyzePaymentSchedule, feeCashflows, projectAdjustableRates, renewalScenariosFor, scheduleEffectiveAPR, statedNetProceeds } from "./scheduleFinance";
 
 const CURRENCY_AMOUNT_SOURCE = String.raw`(?:\$|₹|€|£|¥|US\$|C\$|A\$|S\$|usd|inr|eur|gbp|jpy|cad|aud|sgd|aed|rs\.?)`;
-const SCHEDULE_MONEY_TOKEN = String.raw`(?:(?:US\$|C\$|A\$|S\$|[$₹€£¥]|\b(?:USD|INR|EUR|GBP|JPY|CAD|AUD|SGD|AED)\b|Rs\.?)\s*)?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?`;
 const PRICE_COMPARISON_PATTERN = new RegExp(
   String.raw`(?:was|mrp)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+.*(?:now|offer)\s*${CURRENCY_AMOUNT_SOURCE}\s*[\d,]+`,
   "i"
@@ -73,6 +71,7 @@ export interface ExtractedValues {
   constraintMismatches: Array<{ id: string; label: string; evidence: string; position: number; message: string }>;
   paymentMatches: boolean;
   installmentCount: number | null;
+  installmentSchedule: InstallmentSchedule | null;
   docType: AnalysisContext["docType"];
   extracted: boolean;
   periodCandidates: PeriodCandidate[];
@@ -197,6 +196,7 @@ function applyPlausibility(field: ExtractedField<number>, conflicts: PrincipalPl
 }
 
 export function extractValuesFromText(originalText: string): ExtractedValues {
+  if (originalText.length > rules.maxInputCharacters) throw new Error(`Analysis is limited to ${rules.maxInputCharacters.toLocaleString()} characters.`);
   const document = normalizeDocument(originalText);
   return restoreOriginalEvidence(extractValuesNormalized(document.text), document);
 }
@@ -316,6 +316,14 @@ function extractValuesNormalized(text: string, aiFallback?: AIExtractedFields): 
     }
   }
   let parsedTerm = selectLoanTerm(text, periodCandidates);
+  if (!parsedTerm && paymentSchedule?.count === 1 && paymentSchedule.daysToMaturity) {
+    const unit = scheduleRules.units.find((entry) => entry.unit === paymentSchedule.intervalUnit)!;
+    const months = paymentSchedule.interval * unit.months;
+    const position = Math.max(0, text.indexOf(paymentSchedule.source));
+    parsedTerm = { months, source: paymentSchedule.source, confidence: "high" };
+    periodCandidates.push({ value: paymentSchedule.interval, unit: paymentSchedule.intervalUnit, months,
+      role: "term", source: paymentSchedule.source, span: [position, position + paymentSchedule.source.length], confidence: 0.95 });
+  }
   let termField: ExtractedField<number> = parsedTerm
     ? { value: parsedTerm.months, source: parsedTerm.source, confidence: parsedTerm.confidence === "high" ? 0.95 : 0.65,
       alternatives: periodCandidates.filter((candidate) => candidate.role === "term").map((candidate) => ({ value: candidate.months, label: `${candidate.value} ${candidate.unit}`, source: candidate.source, position: candidate.span[0], confidence: candidate.confidence, score: candidate.confidence * 100 })), needsReview: false }
@@ -483,6 +491,7 @@ function extractValuesNormalized(text: string, aiFallback?: AIExtractedFields): 
     constraintMismatches,
     paymentMatches,
     installmentCount,
+    installmentSchedule: paymentSchedule,
     docType,
     extracted: loanAmount !== null || interestRate !== null || termField.value !== null,
     periodCandidates,
@@ -600,89 +609,6 @@ function describePaymentSchedule(schedule: InstallmentSchedule, currency: Suppor
   return segments.map((segment) => `${segment.count} × ${formatCurrency(segment.amount, currency)}`).join(" + ");
 }
 
-function extractInstallmentSchedule(text: string): InstallmentSchedule | null {
-  const matches = [...new Map(countedSchedules(text).map((entry) => [entry.position + ":" + entry.count, entry])).values()]
-    .sort((left, right) => left.position - right.position);
-  const amounts = extractAmountCandidates(text);
-  const clauses = segmentClauses(text);
-  const segments: NonNullable<InstallmentSchedule["segments"]> = [];
-  let previousFrequency: { interval: number; unit: InstallmentSchedule["intervalUnit"] } | null = null;
-  const segmentWindow = (rules as typeof rules & { paymentSchedule?: { segmentWindowCharacters?: number } }).paymentSchedule?.segmentWindowCharacters ?? 480;
-  for (let index = 0; index < matches.length; index += 1) {
-    const item = matches[index];
-    const clause = clauses.find((candidate) => candidate.start <= item.position && item.position < candidate.end);
-    const next = matches.slice(index + 1).find((candidate) => candidate.position > item.position);
-    const end = Math.min(next?.position ?? item.position + segmentWindow, item.position + segmentWindow);
-    const amountCandidate = amounts.find((candidate) => {
-      if (candidate.position < item.position || candidate.position >= end) return false;
-      // Candidate labels can inherit a nearby table heading (for example Cash
-      // price from the preceding row); qualify against this schedule segment.
-      const localRoleContext = text.slice(Math.max(item.position, candidate.position - 100), candidate.position);
-      return !/principal|loan amount|amount financed|amount borrowed|credit amount|balance|price|finance charge|total (?:of payments|repayment|payable)|\bfees?\b|\bcharges?\b/i.test(localRoleContext);
-    });
-    if (!amountCandidate || amountCandidate.value <= 0) continue;
-    const token = new RegExp(SCHEDULE_MONEY_TOKEN, "gi").exec(text.slice(amountCandidate.position));
-    const sourceStart = clause?.start ?? item.position;
-    const sourceEnd = Math.max(amountCandidate.position + (token?.[0].length ?? String(amountCandidate.value).length),
-      item.position + item.source.length);
-    const source = text.slice(sourceStart, sourceEnd).trim();
-    const frequency = item.frequency ?? frequenciesIn(source)[0] ?? previousFrequency;
-    const unit: InstallmentSchedule["intervalUnit"] = frequency?.unit ?? (item.count === 1 && /\b(?:days?|weeks?|months?|years?)\b/i.test(source)
-      ? /\b(?:days?)\b/i.test(source) ? "day" : /\b(?:weeks?)\b/i.test(source) ? "week" : /\b(?:years?)\b/i.test(source) ? "year" : "month"
-      : "month");
-    const interval = frequency?.interval ?? 1;
-    previousFrequency = { interval, unit };
-    const kind = /\b(?:final|balloon|lump[- ]sum|maturity)\b/i.test(source) ? "balloon" : item.count === 1 && matches.length === 1 ? "single" : "regular";
-    segments.push({ count: item.count, amount: amountCandidate.value, interval, intervalUnit: unit,
-      total: item.count * amountCandidate.value, kind, source });
-  }
-
-  if (segments.length) {
-    const count = segments.reduce((sum, segment) => sum + segment.count, 0);
-    const total = segments.reduce((sum, segment) => sum + segment.total, 0);
-    const stated = amounts.find((candidate) => /total of payments|total repayment|total payable|scheduled total/i.test(candidate.label + " " + candidate.source));
-    const statedTotal = stated?.value ?? null;
-    const tolerance = (rules as unknown as { paymentSchedule?: { roundingTolerance?: number } }).paymentSchedule?.roundingTolerance ?? 0.005;
-    const days = count === 1 ? Number(/\b(?:due|payable|repayable)\s+(?:in|after|within)\s+(?<days>\d+)\s+days?\b/i.exec(text)?.groups?.days ?? 0) || null : null;
-    return { count, amount: segments[0].amount, interval: segments[0].interval, intervalUnit: segments[0].intervalUnit, total,
-      totalWithKnownFees: null, source: segments.map((segment) => segment.source).join(" "), firstPaymentTiming: "one period after agreement",
-      segments, statedTotal, totalMatchesStated: statedTotal === null ? null : Math.abs(total - statedTotal) <= Math.max(1, statedTotal * tolerance),
-      daysToMaturity: days };
-  }
-
-  const singleClause = clauses.find((clause) => new RegExp((rules as typeof rules & { paymentSchedule?: { singlePaymentPattern: string } }).paymentSchedule?.singlePaymentPattern ?? "\\b(?:single|one[- ]time|lump[- ]sum|bullet)\\s+(?:final\\s+)?payment\\b", "i").test(clause.text));
-  if (singleClause && /\b(?:payment|repayment|repay|balloon|maturity)\b/i.test(singleClause.text)) {
-    const dueDays = Number(/\b(?:due|payable|repayable)\s+(?:in|after|within)\s+(?<days>\d+)\s+days?\b/i.exec(singleClause.text)?.groups?.days ?? 0);
-    const dueMonths = Number(/\b(?:due|payable|repayable)\s+(?:in|after|within)\s+(?<months>\d+)\s+months?\b/i.exec(singleClause.text)?.groups?.months ?? 0);
-    const money = amounts.find((candidate) => candidate.position >= singleClause.start && candidate.position < singleClause.end
-      && !/principal|amount financed|finance charge|total (?:of payments|repayment|payable)|fees?|charges?|deposit/i.test(candidate.label));
-    const daysToMaturity = dueDays || (dueMonths ? dueMonths * 30 : null);
-    if (money && daysToMaturity) {
-      return { count: 1, amount: money.value, interval: dueDays || dueMonths, intervalUnit: dueDays ? "day" : "month", total: money.value,
-        totalWithKnownFees: null, source: singleClause.text, firstPaymentTiming: "one period after agreement",
-        segments: [{ count: 1, amount: money.value, interval: dueDays || dueMonths, intervalUnit: dueDays ? "day" : "month", total: money.value, kind: "single", source: singleClause.text }],
-        statedTotal: money.value, totalMatchesStated: true, daysToMaturity };
-    }
-  }
-
-  if (classifyDocument(text).type === "merchant_cash_advance") {
-    const remittanceClause = segmentClauses(text).find((clause) => /\b(?:daily|weekly|monthly|per\s+day|per\s+week)\b[^.;]{0,50}\b(?:remittance|remit|withhold|debit)\b|\b(?:remittance|remit|withhold|debit)\b[^.;]{0,50}\b(?:daily|weekly|monthly|per\s+day|per\s+week)\b/i.test(clause.text));
-    const remittance = remittanceClause && parseMonetaryValues(remittanceClause.text, remittanceClause.start).find((value) => value.amount !== null);
-    const purchased = extractAmountCandidates(text).filter((candidate) => /purchased amount|receivables purchased|total repayment|total of payments/i.test(candidate.label + " " + candidate.source))
-      .sort((left, right) => right.score - left.score)[0];
-    const frequency = remittanceClause?.text.match(/\b(daily|weekly|monthly)\b|\bper\s+(day|week)\b/i)?.[0]?.toLowerCase();
-    const unit: InstallmentSchedule["intervalUnit"] = frequency?.includes("week") ? "week" : frequency?.includes("month") ? "month" : "day";
-    if (remittance?.amount && purchased && purchased.value >= remittance.amount) {
-      const count = Math.round(purchased.value / remittance.amount);
-      if (count > 0 && Math.abs(count * remittance.amount - purchased.value) <= Math.max(1, purchased.value * 0.01)) {
-        return { count, amount: remittance.amount, interval: 1, intervalUnit: unit, total: count * remittance.amount,
-          totalWithKnownFees: null, source: remittanceClause!.text, firstPaymentTiming: "one period after agreement",
-          segments: [{ count, amount: remittance.amount, interval: 1, intervalUnit: unit, total: count * remittance.amount, kind: "regular", source: remittanceClause!.text }] };
-      }
-    }
-  }
-  return null;
-}
 
 export function analyzeLocally(
   originalText: string,
@@ -692,6 +618,7 @@ export function analyzeLocally(
   currencyOverride: SupportedCurrency | null = null,
   aiFallback?: AIExtractedFields,
 ): AnalysisContext {
+  if (originalText.length > rules.maxInputCharacters) throw new Error(`Analysis is limited to ${rules.maxInputCharacters.toLocaleString()} characters.`);
   const document = normalizeDocument(originalText);
   const text = document.text;
   const extracted = extractValuesNormalized(text, aiFallback);
@@ -712,12 +639,13 @@ export function analyzeLocally(
   const currencyCode = currency ?? "USD";
   let principal = principalField.needsReview ? null : principalField.value;
   const duration = termField.value;
-  let schedule = extractInstallmentSchedule(text);
+  let schedule = extracted.installmentSchedule;
   const statedTotalPayments = extracted.amountCandidates.find((candidate) => /total of payments|total repayment|total payable|scheduled total/i.test(candidate.label + " " + candidate.source))?.value ?? null;
   const statedFinanceCharge = extracted.amountCandidates.find((candidate) => /finance charge|interest charge|total interest/i.test(candidate.label + " " + candidate.source))?.value ?? null;
   const nonAmortizingPayment = hasNonAmortizingPayment(text);
   const installmentCount = schedule?.count ?? extracted.installmentCount;
   const mca = extracted.docType.type === "merchant_cash_advance";
+  const disclosedProceeds = statedNetProceeds(text);
   const priceCandidate = extracted.amountCandidates
     .filter((candidate) => candidate.score > 0 && (mca
       ? /net\s+proceeds|advance\s+amount|amount\s+(?:financed|advanced|funded)/i.test(candidate.label)
@@ -725,7 +653,9 @@ export function analyzeLocally(
     .sort((a, b) => b.score - a.score || a.position - b.position)[0];
   const cashPriceTypes = (rules as unknown as { calculatorRegistry?: { cashPriceComparisonTypes?: string[] } }).calculatorRegistry?.cashPriceComparisonTypes
     ?? ["merchant_cash_advance", "bnpl", "subscription", "rent_to_own"];
-  const cashPrice = cashPriceTypes.includes(extracted.docType.type) ? priceCandidate?.value ?? principal : null;
+  const cashPrice = cashPriceTypes.includes(extracted.docType.type)
+    ? mca && disclosedProceeds && (principal === null || disclosedProceeds.amount <= principal)
+      ? disclosedProceeds.amount : priceCandidate?.value ?? principal : null;
   const periodsPerYear: Record<InstallmentSchedule["intervalUnit"], number> = { day: 365, week: 52, fortnight: 26, month: 12, year: 1 };
   let cashPriceAnalysis: CashPriceAnalysis | null = null;
   if (cashPrice !== null && cashPrice > 0 && schedule) {
@@ -878,12 +808,22 @@ export function analyzeLocally(
   const supportsAmortizingCalculation = ["reducing_balance", "reducing_balance_with_offsets_and_tax", "flat"].includes(selectedCalculator);
   const financialMetricsAvailable = calculator.available && (Boolean(scheduledLoan) || supportsAmortizingCalculation || selectedCalculator === "revolving");
   const cashflowFees = feeCashflows(allFindings);
-  const disclosedProceeds = statedNetProceeds(text);
   const itemizedFees = cashflowFees.deducted + cashflowFees.financed + cashflowFees.paidSeparately + cashflowFees.unknown;
   const proceedsReconcile = principal !== null && disclosedProceeds !== null && disclosedProceeds.amount <= principal
     && Math.abs(principal - disclosedProceeds.amount - itemizedFees) <= 0.02;
-  const withheldFees = proceedsReconcile ? principal! - disclosedProceeds!.amount : cashflowFees.deducted + cashflowFees.financed;
-  const upfrontFees = withheldFees + (proceedsReconcile ? 0 : cashflowFees.paidSeparately);
+  const withheldFees = disclosedProceeds && principal !== null && disclosedProceeds.amount <= principal
+    ? principal - disclosedProceeds.amount : cashflowFees.deducted + cashflowFees.financed;
+  // A disclosed receipt excludes separately paid costs. Unqualified fees may
+  // explain a matching deduction; explicitly separate charges remain additional.
+  const upfrontFees = withheldFees + (proceedsReconcile ? cashflowFees.explicitPaidSeparately : cashflowFees.paidSeparately);
+  if (mca && cashPriceAnalysis && schedule) {
+    const economicProceeds = disclosedProceeds
+      ? disclosedProceeds.amount - cashflowFees.paidSeparately
+      : principal !== null ? principal - upfrontFees : cashPriceAnalysis.cashPrice - cashflowFees.paidSeparately;
+    if (economicProceeds > 0) cashPriceAnalysis = { ...cashPriceAnalysis, cashPrice: economicProceeds,
+      multiple: schedule.total / economicProceeds, extraCost: schedule.total - economicProceeds,
+      impliedNominalAPR: scheduleEffectiveAPR(economicProceeds, schedule) };
+  }
   const monthlyCharges = allFindings.filter((finding) => !finding.negated
     && finding.frequency === "monthly"
     && !["tax", "offset", "penalty"].includes(finding.category)
@@ -919,7 +859,7 @@ export function analyzeLocally(
       totalPayment = loanResult.totalPayment;
       totalInterest = baseResult.totalInterest;
       totalCost = loanResult.totalCost;
-      netDisbursed = principal - withheldFees;
+      netDisbursed = loanResult.netDisbursed;
       effectiveAPR = loanResult.effectiveAPR;
     }
   }
@@ -942,9 +882,9 @@ export function analyzeLocally(
       effectiveAPR = calculateShortTermAPR(netReceived, singleRepayment, schedule.daysToMaturity);
       emi = schedule.amount;
       totalPayment = singleRepayment;
-      totalInterest = statedFinanceCharge ?? Math.max(0, totalPayment - principal);
-      totalCost = totalInterest + upfrontFees;
-      netDisbursed = principal - withheldFees;
+      totalInterest = Math.max(0, totalPayment - principal);
+      totalCost = totalPayment - netReceived;
+      netDisbursed = netReceived;
     }
   }
   if (scheduledLoan && schedule && principal !== null && schedule.count !== 1) {
@@ -954,7 +894,7 @@ export function analyzeLocally(
       totalPayment = modeled.totalPayment;
       totalInterest = modeled.totalInterest;
       totalCost = modeled.totalCost;
-      netDisbursed = principal - withheldFees;
+      netDisbursed = modeled.netDisbursed;
       effectiveAPR = modeled.effectiveAPR;
     }
   }
@@ -1197,6 +1137,7 @@ export function analyzeLocally(
     return finding.label + ": amount not stated. Evidence: " + finding.source;
   });
   const insights: string[] = [];
+  if (schedule?.maturityAssumption) insights.push(schedule.maturityAssumption);
   if (extracted.constraintAssignment.explanation && extracted.constraintAssignment.matchedPayment) insights.push(extracted.constraintAssignment.explanation);
   if (reconciliationResolution) insights.push(reconciliationResolution);
   if (extracted.paymentMatches) insights.push("The stated monthly payment matches the computed payment within 1%.");
